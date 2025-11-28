@@ -28,6 +28,75 @@ EMAIL = os.getenv("TDS_EMAIL") or os.getenv("EMAIL")
 SECRET = os.getenv("TDS_SECRET") or os.getenv("SECRET")
 RECURSION_LIMIT = 5000
 
+# Global variables for log management
+current_log_file = None
+upload_thread = None
+stop_upload_thread = False
+
+def upload_current_log(reason="Progress"):
+    """Upload current log file to GitHub Gist."""
+    try:
+        from remote_logger import upload_to_github_gist
+        import glob
+        
+        # Find the most recent log file
+        log_files = glob.glob("hybrid_logs_*.txt")
+        if log_files:
+            latest_log = max(log_files, key=os.path.getctime)
+            with open(latest_log, 'r') as f:
+                log_content = f.read()
+            
+            upload_to_github_gist(
+                content=log_content,
+                description=f"Quiz Solver {reason} - {time.strftime('%Y-%m-%d %H:%M:%S')}"
+            )
+    except Exception:
+        pass  # Silent fail
+
+def periodic_upload_worker():
+    """Background worker that uploads logs every 5 minutes."""
+    global stop_upload_thread
+    import threading
+    
+    while not stop_upload_thread:
+        # Wait 5 minutes (300 seconds)
+        for _ in range(300):
+            if stop_upload_thread:
+                return
+            time.sleep(1)
+        
+        # Upload if still running
+        if not stop_upload_thread:
+            upload_current_log("Progress Update")
+
+def start_periodic_uploads():
+    """Start background thread for periodic uploads."""
+    global upload_thread, stop_upload_thread
+    import threading
+    
+    stop_upload_thread = False
+    upload_thread = threading.Thread(target=periodic_upload_worker, daemon=True)
+    upload_thread.start()
+
+def stop_periodic_uploads():
+    """Stop background upload thread."""
+    global stop_upload_thread
+    stop_upload_thread = True
+
+def signal_handler(signum, frame):
+    """Handle Ctrl+C gracefully by uploading logs."""
+    print("\n[AGENT] ⚠️ Interrupted by user, uploading logs...")
+    stop_periodic_uploads()
+    upload_current_log("Interrupted")
+    print("[AGENT] ✓ Logs uploaded, exiting...")
+    import sys
+    sys.exit(0)
+
+# Register signal handler for Ctrl+C
+import signal
+signal.signal(signal.SIGINT, signal_handler)
+signal.signal(signal.SIGTERM, signal_handler)
+
 # -------------------------------------------------
 # ENHANCED STATE
 # -------------------------------------------------
@@ -420,6 +489,9 @@ def run_agent(url: str) -> str:
     from hybrid_tools.send_request import reset_submission_tracking
     reset_submission_tracking()
     
+    # Start periodic log uploads (every 5 minutes)
+    start_periodic_uploads()
+    
     # Initialize state
     start_time = time.time()
     initial_state = {
@@ -438,6 +510,9 @@ def run_agent(url: str) -> str:
         total_time = time.time() - start_time
         print(f"\n[AGENT] ✓ Tasks completed successfully")
         print(f"[AGENT] Total time: {total_time:.1f}s")
+        
+        # Stop periodic uploads
+        stop_periodic_uploads()
         
         # Upload full log file to GitHub Gist if configured
         try:
@@ -466,6 +541,9 @@ def run_agent(url: str) -> str:
         print(f"\n[AGENT] ✗ Error: {e}")
         import traceback
         traceback.print_exc()
+        
+        # Stop periodic uploads
+        stop_periodic_uploads()
         
         # Upload full log file to GitHub Gist if configured
         try:
