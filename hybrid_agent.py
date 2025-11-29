@@ -5,6 +5,7 @@ Combines:
 - LangGraph architecture
 - Enhanced features for data science tasks
 - Smart API Key Rotation
+- Memory Management (Fixes Token Explosion)
 """
 
 from langgraph.graph import StateGraph, END, START
@@ -297,6 +298,21 @@ prompt = ChatPromptTemplate.from_messages([
     MessagesPlaceholder(variable_name="messages")
 ])
 
+# -------------------------------------------------
+# MESSAGE TRIMMING UTILITY (CRITICAL FIX)
+# -------------------------------------------------
+def filter_messages(messages: List, max_keep=20) -> List:
+    """
+    Keep only the most recent messages to prevent token context explosion.
+    Always keep the first message (original prompt) and the last N messages.
+    """
+    if len(messages) <= max_keep:
+        return messages
+    
+    # Keep first message (context) + last N messages
+    print(f"[AGENT] 🧹 Pruning memory: Keeping last {max_keep} messages (Total was {len(messages)})")
+    return [messages[0]] + messages[-max_keep:]
+
 
 # -------------------------------------------------
 # AGENT NODE WITH SIMPLE CONFIGURATION
@@ -304,6 +320,11 @@ prompt = ChatPromptTemplate.from_messages([
 def agent_node(state: AgentState):
     """Agent decision-making node with simple USE_GEMINI configuration."""
     print(f"\n[AGENT] 🤖 LLM thinking...")
+    
+    # ----------------------------------------
+    # FIX: Trim messages before sending to LLM
+    # ----------------------------------------
+    trimmed_messages = filter_messages(state["messages"])
     
     if USE_GEMINI:
         # Use Gemini with OpenAI fallback
@@ -316,7 +337,8 @@ def agent_node(state: AgentState):
         try:
             llm = create_gemini_llm()
             llm_with_prompt = prompt | llm
-            result = llm_with_prompt.invoke({"messages": state["messages"]})
+            # Use trimmed messages
+            result = llm_with_prompt.invoke({"messages": trimmed_messages})
             log_llm_decision(result, "Gemini")
             return {"messages": state["messages"] + [result]}
             
@@ -352,10 +374,16 @@ def agent_node(state: AgentState):
 
 def use_openai(state: AgentState, use_fallback=False):
     """Use OpenAI LLM."""
+    # ----------------------------------------
+    # FIX: Trim messages before sending to LLM
+    # ----------------------------------------
+    trimmed_messages = filter_messages(state["messages"])
+    
     try:
         llm = create_openai_llm(use_fallback=use_fallback)
         llm_with_prompt = prompt | llm
-        result = llm_with_prompt.invoke({"messages": state["messages"]})
+        # Use trimmed messages
+        result = llm_with_prompt.invoke({"messages": trimmed_messages})
         model_name = FALLBACK_OPENAI_MODEL if use_fallback else PRIMARY_OPENAI_MODEL
         log_llm_decision(result, f"OpenAI ({model_name})")
         return {"messages": state["messages"] + [result]}
