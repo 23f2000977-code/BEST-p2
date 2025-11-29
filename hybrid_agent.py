@@ -1,9 +1,5 @@
 """
 Hybrid LangGraph Agent - Best of Both Worlds
-
-Combines:
-- LangGraph architecture from someonesproject2
-- Enhanced features from your project
 """
 
 from langgraph.graph import StateGraph, END, START
@@ -132,8 +128,6 @@ from api_key_rotator import get_api_key_rotator
 # Simple configuration: Use Gemini or OpenAI
 USE_GEMINI = os.getenv("USE_GEMINI", "true").lower() in ("true", "1", "yes")
 
-# OpenAI model configuration (with backward compatibility)
-# Check for old OPENAI_MODEL first for backward compatibility
 OPENAI_MODEL = os.getenv("OPENAI_MODEL")  # Old variable
 FALLBACK_OPENAI_MODEL = os.getenv("FALLBACK_OPENAI_MODEL", OPENAI_MODEL or "gpt-4o-mini")
 PRIMARY_OPENAI_MODEL = os.getenv("PRIMARY_OPENAI_MODEL", FALLBACK_OPENAI_MODEL)
@@ -154,8 +148,9 @@ rate_limiter = InMemoryRateLimiter(
 )
 
 def create_gemini_llm():
-    """Create Gemini LLM with rotation."""
+    """Create Gemini LLM with rotation and fast-fail."""
     if api_rotator:
+        # Get next VALID key (skipping exhausted ones)
         api_key = api_rotator.get_next_key()
     else:
         api_key = os.getenv("GOOGLE_API_KEY")
@@ -164,7 +159,8 @@ def create_gemini_llm():
         model_provider="google_genai",
         model="gemini-2.5-flash",
         api_key=api_key,
-        rate_limiter=rate_limiter
+        rate_limiter=rate_limiter,
+        max_retries=0  # CRITICAL: Don't wait 60s, fail immediately so we can rotate
     ).bind_tools(TOOLS)
 
 def create_openai_llm(use_fallback=False):
@@ -184,10 +180,6 @@ if USE_GEMINI:
         print(f"[AGENT] Gemini keys available: {api_rotator.key_count}")
 else:
     print(f"[AGENT] Primary LLM: OpenAI ({PRIMARY_OPENAI_MODEL})")
-    if PRIMARY_OPENAI_MODEL == FALLBACK_OPENAI_MODEL:
-        print(f"[AGENT] Fallback LLM: OpenAI (same model)")
-    else:
-        print(f"[AGENT] Fallback LLM: OpenAI ({FALLBACK_OPENAI_MODEL})")
 
 
 
@@ -381,17 +373,20 @@ def agent_node(state: AgentState):
                                for keyword in ["quota", "429", "resource_exhausted", "rate limit"])
             
             if is_quota_error and api_rotator:
-                print(f"[AGENT] 🔄 Quota exceeded on current Gemini key")
-                current_key_index = (api_rotator._current_index - 1) % api_rotator.key_count
-                api_rotator.mark_key_exhausted(current_key_index)
+                print(f"[AGENT] 🔄 Quota exceeded. Marking key as dead and retrying...")
+                
+                # Mark current key as dead
+                current_key = api_rotator.get_current_key()
+                api_rotator.mark_key_exhausted(current_key)
                 
                 if api_rotator.are_all_keys_exhausted():
                     print(f"[AGENT] 🔄 All Gemini keys exhausted, switching to OpenAI")
+                    return use_openai(state, use_fallback=True)
                 else:
-                    print(f"[AGENT] 🔄 Trying next Gemini key...")
-                    return agent_node(state)
+                    print(f"[AGENT] 🔄 Retrying immediately with next key...")
+                    return agent_node(state) # Recursive retry with new key
             
-            # Fallback to OpenAI
+            # Fallback to OpenAI for other errors
             print(f"[AGENT] 🔄 Switching to OpenAI fallback")
             return use_openai(state, use_fallback=True)
     
