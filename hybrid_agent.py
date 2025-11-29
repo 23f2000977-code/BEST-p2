@@ -5,8 +5,8 @@ Combines:
 - LangGraph architecture
 - Enhanced features for data science tasks
 - Smart API Key Rotation
-- Memory Management
-- "Rage Quit" Logic to force progression
+- Memory Management (OpenAI Safe Version)
+- "Rage Quit" Logic
 """
 
 from langgraph.graph import StateGraph, END, START
@@ -20,6 +20,7 @@ from hybrid_tools import (
 )
 from typing import TypedDict, Annotated, List, Dict, Any
 from langchain.chat_models import init_chat_model
+from langchain_core.messages import ToolMessage, AIMessage
 from langgraph.graph.message import add_messages
 import os
 from dotenv import load_dotenv
@@ -311,19 +312,31 @@ prompt = ChatPromptTemplate.from_messages([
 ])
 
 # -------------------------------------------------
-# MESSAGE TRIMMING UTILITY (BALANCED)
+# MESSAGE TRIMMING UTILITY (OPENAI SAFE)
 # -------------------------------------------------
-def filter_messages(messages: List, max_keep=10) -> List:
+def filter_messages(messages: List, max_keep=20) -> List:
     """
-    Keep the System Prompt + the last 10 messages.
-    Enough for the current task, but forgets previous questions to save tokens.
+    OpenAI-Safe Memory Pruning.
+    Ensures ToolMessages are not left as orphans without their AIMessage calls.
     """
     if len(messages) <= max_keep:
         return messages
     
-    # Keep first message (System instructions) + last N messages
-    print(f"[AGENT] 🧹 Pruning memory: Keeping last {max_keep} messages (Total was {len(messages)})")
-    return [messages[0]] + messages[-max_keep:]
+    # Keep System Prompt
+    system_prompt = messages[0]
+    
+    # Get recent messages
+    recent = messages[-max_keep:]
+    
+    # SAFETY CHECK: If the first message is a ToolMessage (result),
+    # but we deleted the AIMessage (call) before it, OpenAI will crash.
+    # We must remove leading ToolMessages until we hit a Human or AI message.
+    while recent and isinstance(recent[0], ToolMessage):
+        print(f"[AGENT] 🧹 Pruning orphan ToolMessage to satisfy OpenAI")
+        recent.pop(0)
+    
+    print(f"[AGENT] 🧹 Pruning memory: Keeping last {len(recent)} messages (Total was {len(messages)})")
+    return [system_prompt] + recent
 
 
 # -------------------------------------------------
