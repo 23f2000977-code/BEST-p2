@@ -1,5 +1,10 @@
 """
 Hybrid LangGraph Agent - Best of Both Worlds
+
+Combines:
+- LangGraph architecture
+- Enhanced features for data science tasks
+- Smart API Key Rotation
 """
 
 from langgraph.graph import StateGraph, END, START
@@ -119,7 +124,6 @@ TOOLS = [
 ]
 
 
-
 # -------------------------------------------------
 # SIMPLE LLM CONFIGURATION
 # -------------------------------------------------
@@ -182,9 +186,6 @@ else:
     print(f"[AGENT] Primary LLM: OpenAI ({PRIMARY_OPENAI_MODEL})")
 
 
-
-
-
 # -------------------------------------------------
 # ENHANCED SYSTEM PROMPT
 # -------------------------------------------------
@@ -212,7 +213,7 @@ AVAILABLE TOOLS:
   * Use for data processing, ML analysis, visualization
   * Returns answer in stdout (use this for submission)
   * Use for data cleansing, transformation, filtering, sorting, aggregating
-  * Available libraries: pandas, numpy, scipy, scikit-learn, httpx, pdfplumber, beautifulsoup4
+  * Available libraries: pandas, numpy, scipy, scikit-learn, httpx, pdfplumber, beautifulsoup4, pillow
   * For ML: sklearn models, statistical analysis, geo-spatial analysis
 - transcribe_audio(audio_url): Transcribe audio with multi-fallback (SpeechRecognition → Gemini → Whisper)
 - analyze_image(image_url, question): Analyze images using Gemini Vision (OCR, chart reading, etc.)
@@ -232,6 +233,10 @@ AVAILABLE TOOLS:
 
 STRICT RULES — FOLLOW EXACTLY:
 
+PRE-INSTALLED LIBRARIES (DO NOT INSTALL THESE):
+- pandas, numpy, scipy, scikit-learn, matplotlib, seaborn, playwright, requests, httpx, pillow
+- ONLY use 'add_dependencies' for obscure libraries not listed above.
+
 VISUALIZATION RULES (CRITICAL FOR SPEED):
 - When create_visualization or create_chart_from_data returns a base64 string:
   * DO NOT analyze or think about the result
@@ -241,47 +246,11 @@ VISUALIZATION RULES (CRITICAL FOR SPEED):
 
 GENERAL RULES:
 - NEVER stop early. Continue solving tasks until no new URL is provided
-- NEVER hallucinate URLs, endpoints, fields, values, or JSON structure
-- NEVER shorten or modify URLs. Always submit the full URL
+- NEVER hallucinate URLs. Always submit the full URL
 - ALWAYS inspect the server response before deciding what to do next
 - ALWAYS use extract_context after loading a page to find submit URLs and APIs
 - For code generation: assign final answer to variable named 'answer'
 - For code: DO NOT include submission code (httpx.post) - use post_request tool instead
-
-DATA SCIENCE TASK TYPES:
-
-1. SCRAPING (with JavaScript):
-   - Use get_rendered_html for dynamic pages
-   - Use extract_context to find APIs and data sources
-   - Parse HTML with BeautifulSoup in run_code
-
-2. API SOURCING:
-   - Use extract_context to discover API endpoints
-   - Sample APIs to discover field names
-   - Use run_code with httpx for API calls with custom headers
-
-3. DATA CLEANSING:
-   - Use run_code with pandas for cleaning text, CSV, JSON data
-   - Use pdfplumber for PDF text extraction
-   - Handle missing values, duplicates, formatting
-
-4. DATA PROCESSING:
-   - Audio: Use transcribe_audio (multi-fallback)
-   - Images: Use analyze_image for OCR, chart reading, visual analysis
-   - Text: Use run_code for NLP, regex, parsing
-
-5. DATA ANALYSIS:
-   - Filtering, sorting, aggregating: pandas in run_code
-   - Statistical analysis: numpy, scipy in run_code
-   - ML models: scikit-learn in run_code
-   - Geo-spatial: geopandas (install with add_dependencies)
-   - Network analysis: networkx (install with add_dependencies)
-
-6. DATA VISUALIZATION:
-   - Simple charts: Use create_visualization
-   - Custom charts: Use create_chart_from_data
-   - Interactive: Generate matplotlib/seaborn and return as base64
-   - Always return base64-encoded PNG for submission
 
 TIME LIMIT RULES:
 - Each task has a hard 3-minute limit
@@ -303,19 +272,6 @@ CODE GENERATION BEST PRACTICES:
 - Use context variables (previous_answers) when available
 - Assign ONLY the final answer value to 'answer' variable (not submission payload)
 - For visualizations, return base64-encoded PNG string
-
-ML/STATISTICAL ANALYSIS EXAMPLES:
-- Linear regression: Use sklearn.linear_model.LinearRegression
-- Classification: Use sklearn models (LogisticRegression, RandomForest, etc.)
-- Clustering: Use sklearn.cluster (KMeans, DBSCAN, etc.)
-- Statistical tests: Use scipy.stats
-- Time series: Use pandas datetime functions
-- Correlation: Use pandas.DataFrame.corr()
-
-VISUALIZATION EXAMPLES:
-- Bar chart: create_visualization("data from API /sales", "bar", "Sales by Month")
-- Custom: create_chart_from_data("df = pd.read_json(...)", "plt.bar(df.x, df.y)")
-- Heatmap: create_visualization("correlation matrix of features", "heatmap")
 
 STOPPING CONDITION:
 - Only return "END" when a server response explicitly contains NO new URL
@@ -419,7 +375,6 @@ def log_llm_decision(result, llm_type="LLM"):
         if isinstance(content, str):
             preview = content[:100] + "..." if len(content) > 100 else content
             print(f"[AGENT] 💬 {llm_type} response: {preview}")
-
 
 
 # -------------------------------------------------
