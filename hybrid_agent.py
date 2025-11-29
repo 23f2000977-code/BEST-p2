@@ -5,7 +5,8 @@ Combines:
 - LangGraph architecture
 - Enhanced features for data science tasks
 - Smart API Key Rotation
-- Memory Management (Fixes Token Explosion)
+- Memory Management
+- "Rage Quit" Logic to force progression
 """
 
 from langgraph.graph import StateGraph, END, START
@@ -235,8 +236,15 @@ AVAILABLE TOOLS:
 STRICT RULES — FOLLOW EXACTLY:
 
 PRE-INSTALLED LIBRARIES (DO NOT INSTALL THESE):
-- pandas, numpy, scipy, scikit-learn, matplotlib, seaborn, playwright, requests, httpx, pillow
+- pandas, numpy, scipy, scikit-learn, matplotlib, seaborn, playwright, requests, httpx, pillow, pdfplumber
 - ONLY use 'add_dependencies' for obscure libraries not listed above.
+
+FILE PATH RULES (CRITICAL):
+- You are running INSIDE the 'hybrid_llm_files' directory.
+- When you use download_file, it saves to: hybrid_llm_files/filename.ext
+- BUT when you run_code, you are ALREADY INSIDE that folder.
+- DO NOT write: pd.read_csv('hybrid_llm_files/filename.csv') -> THIS FAILS.
+- DO WRITE: pd.read_csv('filename.csv') -> THIS WORKS.
 
 VISUALIZATION RULES (CRITICAL FOR SPEED):
 - When create_visualization or create_chart_from_data returns a base64 string:
@@ -250,6 +258,10 @@ GENERAL RULES:
 - NEVER hallucinate URLs. Always submit the full URL
 - ALWAYS inspect the server response before deciding what to do next
 - ALWAYS use extract_context after loading a page to find submit URLs and APIs
+- IF YOU CANNOT SOLVE A TASK after 3 attempts or if code execution fails repeatedly:
+  * DO NOT keep retrying internally.
+  * SUBMIT the word "SKIP" or your best guess to the endpoint immediately.
+  * This is CRITICAL to receive the URL for the next question.
 - For code generation: assign final answer to variable named 'answer'
 - For code: DO NOT include submission code (httpx.post) - use post_request tool instead
 
@@ -299,17 +311,17 @@ prompt = ChatPromptTemplate.from_messages([
 ])
 
 # -------------------------------------------------
-# MESSAGE TRIMMING UTILITY (CRITICAL FIX)
+# MESSAGE TRIMMING UTILITY (BALANCED)
 # -------------------------------------------------
-def filter_messages(messages: List, max_keep=20) -> List:
+def filter_messages(messages: List, max_keep=10) -> List:
     """
-    Keep only the most recent messages to prevent token context explosion.
-    Always keep the first message (original prompt) and the last N messages.
+    Keep the System Prompt + the last 10 messages.
+    Enough for the current task, but forgets previous questions to save tokens.
     """
     if len(messages) <= max_keep:
         return messages
     
-    # Keep first message (context) + last N messages
+    # Keep first message (System instructions) + last N messages
     print(f"[AGENT] 🧹 Pruning memory: Keeping last {max_keep} messages (Total was {len(messages)})")
     return [messages[0]] + messages[-max_keep:]
 
