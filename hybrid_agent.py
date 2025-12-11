@@ -1,10 +1,10 @@
 """
-Hybrid LangGraph Agent - General Purpose Version
+Hybrid LangGraph Agent - Best of Both Worlds
 
 Combines:
 - LangGraph architecture
 - Enhanced features for data science tasks
-- Smart API Key Rotation with RECURSIVE RETRY (Restored)
+- Smart API Key Rotation (Exhaustive Loop)
 - Memory Management (OpenAI Safe Version)
 - "Rage Quit" Logic
 - FULL Remote Logging (GitHub Gist)
@@ -154,16 +154,13 @@ rate_limiter = InMemoryRateLimiter(
     max_bucket_size=9
 )
 
-def create_gemini_llm(retry_mode=False):
-    """Create Gemini LLM. If retry_mode=True, gets the NEXT key."""
+def create_gemini_llm():
+    """Create Gemini LLM with current rotated key."""
     if not api_rotator:
         raise ValueError("No Rotator available for Gemini")
-    
-    # If retrying, we explicitly want the next key
-    if retry_mode:
-        api_key = api_rotator.get_next_key()
-    else:
-        api_key = api_rotator.get_current_key()
+        
+    # Get current VALID key (rotator handles skipping exhausted ones internally)
+    api_key = api_rotator.get_current_key()
     
     return init_chat_model(
         model_provider="google_genai",
@@ -255,10 +252,7 @@ prompt = ChatPromptTemplate.from_messages([
 # MESSAGE TRIMMING UTILITY (OPENAI SAFE)
 # -------------------------------------------------
 def filter_messages(messages: List, max_keep=20) -> List:
-    """
-    OpenAI-Safe Memory Pruning.
-    Ensures ToolMessages are not left as orphans without their AIMessage calls.
-    """
+    """OpenAI-Safe Memory Pruning."""
     if len(messages) <= max_keep:
         return messages
     
@@ -270,141 +264,78 @@ def filter_messages(messages: List, max_keep=20) -> List:
     
     # SAFETY CHECK: If the first message is a ToolMessage (result),
     # but we deleted the AIMessage (call) before it, OpenAI will crash.
-    # We must remove leading ToolMessages until we hit a Human or AI message.
     while recent and isinstance(recent[0], ToolMessage):
-        # print(f"[AGENT] 🧹 Pruning orphan ToolMessage to satisfy OpenAI")
         recent.pop(0)
     
-    # print(f"[AGENT] 🧹 Pruning memory: Keeping last {len(recent)} messages")
     return [system_prompt] + recent
 
 
 # -------------------------------------------------
-# AGENT NODE WITH SIMPLE CONFIGURATION
+# AGENT NODE (FIXED EXHAUSTIVE RETRY LOGIC)
 # -------------------------------------------------
 def agent_node(state: AgentState):
-    """Agent decision-making node with simple USE_GEMINI configuration."""
-    print(f"\n[AGENT] 🤖 LLM thinking...")
-    
-    # ----------------------------------------
-    # FIX: Trim messages before sending to LLM
-    # ----------------------------------------
+    """
+    Agent decision node.
+    Logic: Try Gemini Key 1 -> Fail -> Key 2 -> Fail ... -> All Dead -> OpenAI.
+    """
     trimmed_messages = filter_messages(state["messages"])
     
+    # 1. Try Gemini Loop
     if USE_GEMINI:
-        # Use Gemini with OpenAI fallback
-        # Check if all Gemini keys exhausted
-        if api_rotator and api_rotator.are_all_keys_exhausted():
-            print(f"[AGENT] 🔄 All Gemini keys exhausted, using OpenAI")
-            return use_openai(state)
-        
-        # Try Gemini
-        try:
-            # Note: We use the CURRENT key first.
-            llm = create_gemini_llm(retry_mode=False)
-            llm_with_prompt = prompt | llm
-            # Use trimmed messages
-            result = llm_with_prompt.invoke({"messages": trimmed_messages})
-            log_llm_decision(result, "Gemini")
-            return {"messages": state["messages"] + [result]}
-            
-        except Exception as e:
-            error_msg = str(e)
-            print(f"[AGENT] ❌ Gemini failed: {error_msg[:200]}")
-            
-            # Check if it's a quota error
-            is_quota_error = any(keyword in error_msg.lower() 
-                               for keyword in ["quota", "429", "resource_exhausted", "rate limit"])
-            
-            if is_quota_error and api_rotator:
-                print(f"[AGENT] 🔄 Quota exceeded. Marking key as dead and retrying...")
+        # Loop while we still have valid keys to try
+        while api_rotator and not api_rotator.are_all_keys_exhausted():
+            try:
+                # Use current key
+                llm = create_gemini_llm()
+                print(f"[AGENT] 🧠 Thinking (Gemini)...")
                 
-                # Mark current key as dead
-                current_key = api_rotator.get_current_key()
-                api_rotator.mark_key_exhausted(current_key)
+                # If this invoke succeeds, we return immediately
+                result = (prompt | llm).invoke({"messages": trimmed_messages})
+                return {"messages": state["messages"] + [result]}
                 
-                if api_rotator.are_all_keys_exhausted():
-                    print(f"[AGENT] 🔄 All Gemini keys exhausted, switching to OpenAI")
-                    return use_openai(state, use_fallback=True)
+            except Exception as e:
+                error_msg = str(e)
+                print(f"[AGENT] ⚠️ Gemini Error: {error_msg[:100]}")
+                
+                # Check for Quota/Rate Limit
+                if "429" in error_msg or "quota" in error_msg.lower() or "resource_exhausted" in error_msg.lower() or "503" in error_msg:
+                    print(f"[AGENT] 🔄 Gemini Key failed. Marking as dead and trying next...")
+                    api_rotator.mark_key_exhausted()
+                    # Loop continues... api_rotator.get_next_key() is handled inside create_gemini_llm logic via rotator state
+                    
+                    # Force rotator to switch index for next iteration if not handled automatically
+                    if not api_rotator.are_all_keys_exhausted():
+                        api_rotator.get_next_key() 
                 else:
-                    print(f"[AGENT] 🔄 Retrying immediately with next key...")
-                    # RECURSIVE RETRY: Call agent_node again to try the next key
-                    return agent_node(state)
-            
-            # Fallback to OpenAI for other errors
-            print(f"[AGENT] 🔄 Switching to OpenAI fallback")
-            return use_openai(state, use_fallback=True)
-    
-    else:
-        # Use OpenAI only
-        return use_openai(state)
+                    # If it's a logic error (not quota), we might want to just fall through to OpenAI 
+                    # to be safe, or break the loop. Let's break to OpenAI.
+                    print(f"[AGENT] 🛑 Non-quota error. Switching to OpenAI.")
+                    break
 
-def use_openai(state: AgentState, use_fallback=False):
-    """Use OpenAI LLM."""
-    # ----------------------------------------
-    # FIX: Trim messages before sending to LLM
-    # ----------------------------------------
-    trimmed_messages = filter_messages(state["messages"])
-    
+    # 2. Fallback to OpenAI
+    # We reach here ONLY if USE_GEMINI is False, OR all keys exhausted, OR unknown error broke the loop.
+    print(f"[AGENT] 🧠 Thinking (OpenAI Fallback)...")
     try:
-        llm = create_openai_llm(use_fallback=use_fallback)
-        llm_with_prompt = prompt | llm
-        # Use trimmed messages
-        result = llm_with_prompt.invoke({"messages": trimmed_messages})
-        model_name = FALLBACK_OPENAI_MODEL if use_fallback else PRIMARY_OPENAI_MODEL
-        log_llm_decision(result, f"OpenAI ({model_name})")
+        llm = create_openai_llm()
+        result = (prompt | llm).invoke({"messages": trimmed_messages})
         return {"messages": state["messages"] + [result]}
     except Exception as e:
-        print(f"[AGENT] ❌ OpenAI failed: {str(e)[:200]}")
-        raise Exception("LLM failed")
+        print(f"[AGENT] ❌ OpenAI Error: {e}")
+        # If OpenAI fails, we really are stuck.
+        raise e
 
-def log_llm_decision(result, llm_type="LLM"):
-    """Log what the LLM decided to do."""
-    if hasattr(result, "tool_calls") and result.tool_calls:
-        print(f"[AGENT] 🔧 {llm_type} decided to call {len(result.tool_calls)} tool(s):")
-        for i, tool_call in enumerate(result.tool_calls, 1):
-            tool_name = tool_call.get("name", "unknown")
-            print(f"[AGENT]   {i}. {tool_name}")
-    elif hasattr(result, "content"):
-        content = result.content
-        if isinstance(content, str):
-            preview = content[:100] + "..." if len(content) > 100 else content
-            print(f"[AGENT] 💬 {llm_type} response: {preview}")
-
-
-# -------------------------------------------------
-# GRAPH ROUTING
-# -------------------------------------------------
 def route(state):
-    """Route based on last message."""
+    """Route based on tool calls."""
     last = state["messages"][-1]
-    
-    # Support both objects and dicts
-    tool_calls = None
-    if hasattr(last, "tool_calls"):
-        tool_calls = getattr(last, "tool_calls", None)
-    elif isinstance(last, dict):
-        tool_calls = last.get("tool_calls")
-
-    if tool_calls:
+    if hasattr(last, "tool_calls") and last.tool_calls:
         return "tools"
-    
-    # Get content robustly
-    content = None
-    if hasattr(last, "content"):
-        content = getattr(last, "content", None)
-    elif isinstance(last, dict):
-        content = last.get("content")
-
-    if isinstance(content, str) and content.strip() == "END":
+    if "END" in str(getattr(last, "content", "")):
         return END
-    if isinstance(content, list) and content[0].get("text", "").strip() == "END":
-        return END
-    
     return "agent"
 
-
-# Build graph
+# -------------------------------------------------
+# GRAPH SETUP
+# -------------------------------------------------
 graph = StateGraph(AgentState)
 
 graph.add_node("agent", agent_node)
@@ -434,7 +365,7 @@ def run_agent(url: str) -> str:
     from hybrid_tools.send_request import reset_submission_tracking
     reset_submission_tracking()
     
-    # Start periodic log uploads (every 5 minutes)
+    # Start logging
     start_periodic_uploads()
     
     # Initialize state
@@ -456,58 +387,14 @@ def run_agent(url: str) -> str:
         print(f"\n[AGENT] ✓ Tasks completed successfully")
         print(f"[AGENT] Total time: {total_time:.1f}s")
         
-        # Stop periodic uploads
         stop_periodic_uploads()
-        
-        # Upload full log file to GitHub Gist if configured
-        try:
-            from remote_logger import upload_to_github_gist
-            import glob
-            import os
-            
-            # Find the most recent log file
-            log_files = glob.glob("hybrid_logs_*.txt")
-            if log_files:
-                latest_log = max(log_files, key=os.path.getctime)
-                with open(latest_log, 'r') as f:
-                    log_content = f.read()
-                
-                upload_to_github_gist(
-                    content=log_content,
-                    description=f"Quiz Solver Success - {url} - {total_time:.1f}s"
-                )
-        except Exception as log_error:
-            # Don't fail if logging fails
-            pass
-        
+        upload_current_log("Success")
         return "success"
+
     except Exception as e:
         total_time = time.time() - start_time
         print(f"\n[AGENT] ✗ Error: {e}")
-        import traceback
-        traceback.print_exc()
         
-        # Stop periodic uploads
         stop_periodic_uploads()
-        
-        # Upload full log file to GitHub Gist if configured
-        try:
-            from remote_logger import upload_to_github_gist
-            import glob
-            import os
-            
-            # Find the most recent log file
-            log_files = glob.glob("hybrid_logs_*.txt")
-            if log_files:
-                latest_log = max(log_files, key=os.path.getctime)
-                with open(latest_log, 'r') as f:
-                    log_content = f.read()
-                
-                upload_to_github_gist(
-                    content=log_content,
-                    description=f"Quiz Solver Error - {url} - {str(e)[:50]}"
-                )
-        except Exception as log_error:
-            pass
-        
+        upload_current_log("Error")
         return f"error: {e}"
