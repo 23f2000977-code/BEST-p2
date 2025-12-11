@@ -1,92 +1,114 @@
 """
-Enhanced POST request tool with retry logic and time tracking.
-UPDATED: Resets timer on successful answer.
+Enhanced POST request tool with Force-Skip and Correct Timer Logic.
 """
 
 from langchain_core.tools import tool
 import requests
-import json
 import time
 from typing import Any, Dict, Optional
 
-# Track submission history
-_submission_history = []
-_start_time = None
+# --------------------------------------------------------------------------
+# STATE MANAGEMENT
+# We use a simple class to ensure the timer state persists correctly
+# across different tool calls without 'global' keyword confusion.
+# --------------------------------------------------------------------------
+class RequestState:
+    def __init__(self):
+        self.start_time = time.time()
+        self.current_url = None
+
+    def reset_timer(self):
+        self.start_time = time.time()
+        print(f"[TIMER] ⏱️ Timer RESET. Starting count from 0s.")
+
+    def get_elapsed(self):
+        return time.time() - self.start_time
+
+# Global instance
+_state = RequestState()
 
 def reset_submission_tracking():
-    """Reset submission tracking for new quiz chain."""
-    global _submission_history, _start_time
-    _submission_history = []
-    _start_time = time.time()
+    """Called by the main agent at the start of the entire quiz."""
+    _state.reset_timer()
 
 @tool
 def post_request(url: str, payload: Dict[str, Any], headers: Optional[Dict[str, str]] = None) -> Any:
     """
     Send an HTTP POST request to submit an answer.
+    
+    CRITICAL FEATURES:
+    1. Tracks time per question (resets on success/new URL).
+    2. FORCE SKIPS if time > 160s to ensure we get the next URL.
     """
-    global _submission_history, _start_time
-    
-    # Initialize timer if not set
-    if _start_time is None:
-        _start_time = time.time()
-    
-    elapsed = time.time() - _start_time
-    
+    elapsed = _state.get_elapsed()
     headers = headers or {"Content-Type": "application/json"}
     
-    print(f"\n[SUBMIT] Submitting answer to: {url}")
-    print(f"[SUBMIT] Elapsed time: {elapsed:.1f}s / 180s")
+    # -------------------------------------------------------
+    # 1. TIME LIMIT SAFETY CHECK
+    # -------------------------------------------------------
+    # If we are nearing the 180s limit (3 mins), we FORCE a skip.
+    # We use 160s to give a 20s buffer for network latency.
+    if elapsed > 160:
+        print(f"\n[SUBMIT] 🚨 CRITICAL: Time limit imminent ({elapsed:.1f}s / 180s).")
+        print(f"[SUBMIT] ⏭️ FORCING 'SKIP' to get next question link.")
+        payload["answer"] = "SKIP"
+    else:
+        print(f"\n[SUBMIT] Submitting answer to: {url}")
+        print(f"[SUBMIT] Per-Question Timer: {elapsed:.1f}s / 180s")
     
     try:
+        # Send Request
         response = requests.post(url, json=payload, headers=headers, timeout=30)
         response.raise_for_status()
         
         data = response.json()
-        delay = data.get("delay", elapsed)
+        
+        # Extract fields
         correct = data.get("correct", False)
         next_url = data.get("url")
+        message = data.get("message", "")
         reason = data.get("reason", "")
         
-        # Track submission
-        _submission_history.append({
-            "url": payload.get("url"),
-            "answer": payload.get("answer"),
-            "correct": correct,
-            "delay": delay,
-            "timestamp": time.time()
-        })
-        
-        # Build response
+        # -------------------------------------------------------
+        # 2. RESULT HANDLING & TIMER RESET
+        # -------------------------------------------------------
         result = {
             "correct": correct,
-            "delay": delay,
+            "message": message,
             "reason": reason
         }
-        
+
+        # SCENARIO A: Correct Answer
         if correct:
             print(f"[SUBMIT] ✓ Correct answer!")
-            # ---------------------------------------------------------
-            # CRITICAL FIX: Reset timer on success for the next question
-            # ---------------------------------------------------------
-            _start_time = time.time()
-            print(f"[SUBMIT] ⏱️ Timer reset for next question")
-            
             if next_url:
+                print(f"[SUBMIT] 🔗 Next URL found: {next_url}")
                 result["url"] = next_url
-                print(f"[SUBMIT] Next question: {next_url}")
+                # CRITICAL: Reset timer for the NEW question
+                _state.reset_timer()
             else:
-                print(f"[SUBMIT] ✓ Quiz chain completed!")
+                print(f"[SUBMIT] 🎉 Quiz chain completed!")
+
+        # SCENARIO B: Wrong Answer (But maybe we get a link?)
         else:
-            print(f"[SUBMIT] ✗ Wrong answer")
+            print(f"[SUBMIT] ✗ Wrong answer / Skipped")
             if reason: print(f"[SUBMIT] Reason: {reason}")
             
-            if delay < 180:
-                print(f"[SUBMIT] Time remaining: {180 - delay:.1f}s - can retry")
+            # Did the server give us the next URL anyway (e.g. after a SKIP)?
+            if next_url:
+                print(f"[SUBMIT] 🔗 Next URL provided despite failure: {next_url}")
+                result["url"] = next_url
+                result["status"] = "moved_to_next"
+                # CRITICAL: Reset timer because we are moving to a NEW question
+                _state.reset_timer()
             else:
-                print(f"[SUBMIT] Time limit exceeded")
-                if next_url:
-                    result["url"] = next_url
-        
+                # Still on the same question
+                remaining = 180 - _state.get_elapsed()
+                if remaining > 0:
+                    print(f"[SUBMIT] ⏳ Time remaining: {remaining:.1f}s - Retrying...")
+                else:
+                    print(f"[SUBMIT] 💀 Time expired. No next URL.")
+
         return result
         
     except Exception as e:

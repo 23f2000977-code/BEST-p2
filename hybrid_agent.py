@@ -7,6 +7,7 @@ Combines:
 - Smart API Key Rotation
 - Memory Management (OpenAI Safe Version)
 - "Rage Quit" Logic
+- FULL Remote Logging (GitHub Gist)
 """
 
 from langgraph.graph import StateGraph, END, START
@@ -23,8 +24,12 @@ from langchain.chat_models import init_chat_model
 from langchain_core.messages import ToolMessage, AIMessage
 from langgraph.graph.message import add_messages
 import os
-from dotenv import load_dotenv
 import time
+import threading
+import signal
+import sys
+from dotenv import load_dotenv
+from api_key_rotator import get_api_key_rotator
 
 load_dotenv()
 
@@ -32,8 +37,9 @@ EMAIL = os.getenv("TDS_EMAIL") or os.getenv("EMAIL")
 SECRET = os.getenv("TDS_SECRET") or os.getenv("SECRET")
 RECURSION_LIMIT = 5000
 
-# Global variables for log management
-current_log_file = None
+# -------------------------------------------------
+# LOGGING INFRASTRUCTURE
+# -------------------------------------------------
 upload_thread = None
 stop_upload_thread = False
 
@@ -60,7 +66,6 @@ def upload_current_log(reason="Progress"):
 def periodic_upload_worker():
     """Background worker that uploads logs every 5 minutes."""
     global stop_upload_thread
-    import threading
     
     while not stop_upload_thread:
         # Wait 5 minutes (300 seconds)
@@ -76,8 +81,6 @@ def periodic_upload_worker():
 def start_periodic_uploads():
     """Start background thread for periodic uploads."""
     global upload_thread, stop_upload_thread
-    import threading
-    
     stop_upload_thread = False
     upload_thread = threading.Thread(target=periodic_upload_worker, daemon=True)
     upload_thread.start()
@@ -93,11 +96,9 @@ def signal_handler(signum, frame):
     stop_periodic_uploads()
     upload_current_log("Interrupted")
     print("[AGENT] ✓ Logs uploaded, exiting...")
-    import sys
     sys.exit(0)
 
 # Register signal handler for Ctrl+C
-import signal
 signal.signal(signal.SIGINT, signal_handler)
 signal.signal(signal.SIGTERM, signal_handler)
 
@@ -128,10 +129,8 @@ TOOLS = [
 
 
 # -------------------------------------------------
-# SIMPLE LLM CONFIGURATION
+# LLM CONFIGURATION
 # -------------------------------------------------
-from api_key_rotator import get_api_key_rotator
-
 # Simple configuration: Use Gemini or OpenAI
 USE_GEMINI = os.getenv("USE_GEMINI", "true").lower() in ("true", "1", "yes")
 
@@ -183,8 +182,6 @@ def create_openai_llm(use_fallback=False):
 if USE_GEMINI:
     print(f"[AGENT] Primary LLM: Gemini (gemini-2.5-flash)")
     print(f"[AGENT] Fallback LLM: OpenAI ({FALLBACK_OPENAI_MODEL})")
-    if api_rotator:
-        print(f"[AGENT] Gemini keys available: {api_rotator.key_count}")
 else:
     print(f"[AGENT] Primary LLM: OpenAI ({PRIMARY_OPENAI_MODEL})")
 
@@ -192,118 +189,46 @@ else:
 # -------------------------------------------------
 # ENHANCED SYSTEM PROMPT
 # -------------------------------------------------
-SYSTEM_PROMPT = f"""You are an autonomous quiz-solving agent with advanced capabilities for data science tasks.
+SYSTEM_PROMPT = f"""You are an autonomous quiz-solving agent.
 
-Your job is to:
-1. Load the quiz page from the given URL using get_rendered_html
-2. Extract ALL instructions, required parameters, submission rules, and the submit endpoint
-3. Use extract_context to find API URLs, JavaScript code, and forms
-4. Solve the task exactly as required using available tools
-5. Submit the answer ONLY to the endpoint specified on the current page
-6. Read the server response and:
-   - If it contains a new quiz URL → fetch it immediately and continue
-   - If no new URL is present → return "END"
+Your goal is to solve data science tasks and submit answers to the `post_request` tool.
 
-AVAILABLE TOOLS:
+STRATEGY FOR SPECIFIC TASK TYPES:
 
-📥 DATA SOURCING:
-- get_rendered_html(url): Fetch and render HTML pages with JavaScript execution
-- extract_context(html, base_url): Extract submit URLs, APIs, JavaScript, forms from HTML
-- download_file(url, filename): Download files (PDFs, CSVs, images, audio, etc.)
+1. 🎨 HEATMAPS / COLORS:
+   - If asked for "most frequent color" or "heatmap color":
+   - CALL `analyze_image` immediately. The tool has built-in math to calculate the Hex code.
+   - Submit the exact Hex code returned by the tool.
+   - DO NOT write your own Python code for this.
 
-🔍 DATA PROCESSING:
-- run_code(code): Execute Python code safely (90s timeout)
-  * Use for data processing, ML analysis, visualization
-  * Returns answer in stdout (use this for submission)
-  * Use for data cleansing, transformation, filtering, sorting, aggregating
-  * Available libraries: pandas, numpy, scipy, scikit-learn, httpx, pdfplumber, beautifulsoup4, pillow
-  * For ML: sklearn models, statistical analysis, geo-spatial analysis
-- transcribe_audio(audio_url): Transcribe audio with multi-fallback (SpeechRecognition → Gemini → Whisper)
-- analyze_image(image_url, question): Analyze images using Gemini Vision (OCR, chart reading, etc.)
+2. 💻 UV / GIT COMMANDS (JSON FORMATTING RULES):
+   - You will often be asked to submit a command string like: `uv http get ...`
+   - CRITICAL: You must ensure valid JSON syntax.
+   - NEVER use double quotes (") inside the command string.
+   - ALWAYS use SINGLE QUOTES (') for inner arguments.
+   - WRONG: "answer": "uv http get "https://url" -H "Accept: json"" (This breaks JSON)
+   - CORRECT: "answer": "uv http get 'https://url' -H 'Accept: json'"
+   - If the server rejects your answer due to format, try removing the quotes around the URL entirely.
 
-📊 DATA VISUALIZATION:
-- create_visualization(data_description, chart_type, title): Generate charts as base64 images
-  * Supports: bar, line, scatter, pie, histogram, heatmap, box plots
-  * Uses matplotlib/seaborn
-  * Returns base64 PNG string - SUBMIT IMMEDIATELY using post_request
-- create_chart_from_data(data_code, chart_config): Custom chart with full control
-  * Write custom Python for data prep and visualization
-  * Returns base64 PNG string - SUBMIT IMMEDIATELY using post_request
+3. 📁 FILE PATHS:
+   - All files are downloaded to `hybrid_llm_files/`
+   - When using `run_code`, you are ALREADY inside that folder.
+   - Use `pd.read_csv("filename.csv")`, NOT `pd.read_csv("hybrid_llm_files/filename.csv")`.
 
-🚀 UTILITIES:
-- add_dependencies(packages): Install Python packages dynamically
-- post_request(url, payload, headers): Submit answers with retry logic and time tracking
+4. 🛑 SKIPPING LOGIC:
+   - If you fail a task 3 times, or if the `post_request` tool tells you "Time limit imminent",
+   - SUBMIT "SKIP" as the answer.
+   - This ensures we receive the next URL instead of timing out.
 
-STRICT RULES — FOLLOW EXACTLY:
+GENERAL PROCESS:
+1. `get_rendered_html(url)`
+2. `extract_context(html)` -> Look for API/Submit URLs
+3. Solve task (use `transcribe_audio` for audio, `analyze_image` for images)
+4. `post_request(url, payload)`
 
-PRE-INSTALLED LIBRARIES (DO NOT INSTALL THESE):
-- pandas, numpy, scipy, scikit-learn, matplotlib, seaborn, playwright, requests, httpx, pillow, pdfplumber
-- ONLY use 'add_dependencies' for obscure libraries not listed above.
-
-FILE PATH RULES (CRITICAL):
-- You are running INSIDE the 'hybrid_llm_files' directory.
-- When you use download_file, it saves to: hybrid_llm_files/filename.ext
-- BUT when you run_code, you are ALREADY INSIDE that folder.
-- DO NOT write: pd.read_csv('hybrid_llm_files/filename.csv') -> THIS FAILS.
-- DO WRITE: pd.read_csv('filename.csv') -> THIS WORKS.
-
-VISUALIZATION RULES (CRITICAL FOR SPEED):
-- When create_visualization or create_chart_from_data returns a base64 string:
-  * DO NOT analyze or think about the result
-  * IMMEDIATELY call post_request to submit it
-  * The base64 string IS the answer - submit it directly
-  * Example: post_request(submit_url, payload with answer field set to base64_result)
-
-GENERAL RULES:
-- NEVER stop early. Continue solving tasks until no new URL is provided
-- NEVER hallucinate URLs. Always submit the full URL
-- ALWAYS inspect the server response before deciding what to do next
-- ALWAYS use extract_context after loading a page to find submit URLs and APIs
-- IF YOU CANNOT SOLVE A TASK after 3 attempts or if code execution fails repeatedly:
-  * DO NOT keep retrying internally.
-  * SUBMIT the word "SKIP" or your best guess to the endpoint immediately.
-  * This is CRITICAL to receive the URL for the next question.
-- For code generation: assign final answer to variable named 'answer'
-- For code: DO NOT include submission code (httpx.post) - use post_request tool instead
-
-TIME LIMIT RULES:
-- Each task has a hard 3-minute limit
-- The server response includes a "delay" field indicating elapsed time
-- If your answer is wrong and delay < 180s, you can retry
-- If delay >= 180s, move to next question (if URL provided)
-
-CONTEXT AWARENESS:
-- Use extract_context to discover API endpoints and sample their data
-- For audio tasks, use transcribe_audio (it has fallback mechanisms)
-- For image tasks, use analyze_image (Gemini Vision + OpenAI fallback)
-- For PDFs, download first then process with run_code
-- Track previous answers in state for multi-question chains
-
-CODE GENERATION BEST PRACTICES:
-- NEVER hardcode data - always fetch from APIs/files
-- ALWAYS inspect API responses to discover field names
-- Extract and analyze JavaScript code instead of guessing logic
-- Use context variables (previous_answers) when available
-- Assign ONLY the final answer value to 'answer' variable (not submission payload)
-- For visualizations, return base64-encoded PNG string
-
-STOPPING CONDITION:
-- Only return "END" when a server response explicitly contains NO new URL
-- DO NOT return END under any other condition
-
-ADDITIONAL INFORMATION YOU MUST INCLUDE WHEN REQUIRED:
+INFO:
 - Email: {EMAIL}
 - Secret: {SECRET}
-
-YOUR JOB:
-- Follow pages exactly
-- Extract data reliably using tools
-- Apply ML/statistical analysis when needed
-- Generate visualizations as base64 images
-- Never guess
-- Submit correct answers
-- Continue until no new URL
-- Then respond with: END
 """
 
 prompt = ChatPromptTemplate.from_messages([
@@ -332,10 +257,10 @@ def filter_messages(messages: List, max_keep=20) -> List:
     # but we deleted the AIMessage (call) before it, OpenAI will crash.
     # We must remove leading ToolMessages until we hit a Human or AI message.
     while recent and isinstance(recent[0], ToolMessage):
-        print(f"[AGENT] 🧹 Pruning orphan ToolMessage to satisfy OpenAI")
+        # print(f"[AGENT] 🧹 Pruning orphan ToolMessage to satisfy OpenAI")
         recent.pop(0)
     
-    print(f"[AGENT] 🧹 Pruning memory: Keeping last {len(recent)} messages (Total was {len(messages)})")
+    # print(f"[AGENT] 🧹 Pruning memory: Keeping last {len(recent)} messages")
     return [system_prompt] + recent
 
 
@@ -369,14 +294,14 @@ def agent_node(state: AgentState):
             
         except Exception as e:
             error_msg = str(e)
-            print(f"[AGENT] ❌ Gemini failed: {error_msg[:200]}")
+            print(f"[AGENT] ❌ Gemini failed: {error_msg[:100]}")
             
             # Check if it's a quota error
             is_quota_error = any(keyword in error_msg.lower() 
                                for keyword in ["quota", "429", "resource_exhausted", "rate limit"])
             
             if is_quota_error and api_rotator:
-                print(f"[AGENT] 🔄 Quota exceeded. Marking key as dead and retrying...")
+                print(f"[AGENT] 🔄 Quota exceeded. Marking key as dead...")
                 
                 # Mark current key as dead
                 current_key = api_rotator.get_current_key()
