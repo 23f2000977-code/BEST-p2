@@ -1,14 +1,12 @@
 """
-Hybrid LangGraph Agent - Best of Both Worlds
+Hybrid LangGraph Agent - The "Best of Both Worlds" Final Version
 
-Combines:
-- LangGraph architecture
-- Enhanced features for data science tasks
-- Smart API Key Rotation (Exhaustive Loop)
-- Memory Management (OpenAI Safe Version)
-- "Rage Quit" Logic
-- FULL Remote Logging (GitHub Gist)
-- Fixes for: 405 Errors, JSON Quoting, Heatmap Math, and CSV Dates
+Features:
+- 🧠 Dual-Brain: Gemini (Primary) + OpenAI (Fallback)
+- 🔄 Smart Rotation: Exhausts all Gemini keys before spending OpenAI credits
+- 🛡️ Safe-Fail: "Rage Quit" logic to skip impossible questions
+- 📝 Full Logging: Remote Gist uploads + Detailed console output
+- 🔧 Fixes: 405 Errors, JSON quoting, Image Math, CSV Dates
 """
 
 from langgraph.graph import StateGraph, END, START
@@ -34,12 +32,20 @@ from api_key_rotator import get_api_key_rotator
 
 load_dotenv()
 
+# -------------------------------------------------
+# CONFIGURATION
+# -------------------------------------------------
 EMAIL = os.getenv("TDS_EMAIL") or os.getenv("EMAIL")
 SECRET = os.getenv("TDS_SECRET") or os.getenv("SECRET")
 RECURSION_LIMIT = 5000
 
+# Simple configuration: Use Gemini or OpenAI
+USE_GEMINI = os.getenv("USE_GEMINI", "true").lower() in ("true", "1", "yes")
+FALLBACK_OPENAI_MODEL = os.getenv("FALLBACK_OPENAI_MODEL", "gpt-4o-mini")
+PRIMARY_OPENAI_MODEL = os.getenv("PRIMARY_OPENAI_MODEL", "gpt-4o-mini")
+
 # -------------------------------------------------
-# LOGGING INFRASTRUCTURE
+# LOGGING INFRASTRUCTURE (CRITICAL)
 # -------------------------------------------------
 upload_thread = None
 stop_upload_thread = False
@@ -103,18 +109,17 @@ def signal_handler(signum, frame):
 signal.signal(signal.SIGINT, signal_handler)
 signal.signal(signal.SIGTERM, signal_handler)
 
+
 # -------------------------------------------------
 # STATE & TOOLS
 # -------------------------------------------------
 class AgentState(TypedDict):
-    """Enhanced state with context tracking from your project."""
+    """Enhanced state with context tracking."""
     messages: Annotated[List, add_messages]
-    previous_answers: Dict[str, Any]  # Track answers for multi-question chains
-    context: Dict[str, Any]  # Rich context from pages
-    start_time: float  # For time tracking
+    previous_answers: Dict[str, Any]
+    context: Dict[str, Any]
+    start_time: float
 
-
-# All available tools
 TOOLS = [
     run_code,
     get_rendered_html,
@@ -128,17 +133,9 @@ TOOLS = [
     create_chart_from_data
 ]
 
-
 # -------------------------------------------------
-# LLM CONFIGURATION
+# LLM SETUP
 # -------------------------------------------------
-# Simple configuration: Use Gemini or OpenAI
-USE_GEMINI = os.getenv("USE_GEMINI", "true").lower() in ("true", "1", "yes")
-
-OPENAI_MODEL = os.getenv("OPENAI_MODEL")  # Old variable
-FALLBACK_OPENAI_MODEL = os.getenv("FALLBACK_OPENAI_MODEL", OPENAI_MODEL or "gpt-4o-mini")
-PRIMARY_OPENAI_MODEL = os.getenv("PRIMARY_OPENAI_MODEL", FALLBACK_OPENAI_MODEL)
-
 # Initialize API key rotator (for Gemini)
 try:
     api_rotator = get_api_key_rotator()
@@ -149,7 +146,7 @@ except Exception as e:
     api_rotator = None
 
 rate_limiter = InMemoryRateLimiter(
-    requests_per_second=9/60,  # 9 requests per minute
+    requests_per_second=9/60,
     check_every_n_seconds=1,
     max_bucket_size=9
 )
@@ -158,8 +155,8 @@ def create_gemini_llm():
     """Create Gemini LLM with current rotated key."""
     if not api_rotator:
         raise ValueError("No Rotator available for Gemini")
-        
-    # Get current VALID key (rotator handles skipping exhausted ones internally)
+    
+    # Get current VALID key
     api_key = api_rotator.get_current_key()
     
     return init_chat_model(
@@ -167,7 +164,7 @@ def create_gemini_llm():
         model="gemini-2.5-flash",
         api_key=api_key,
         rate_limiter=rate_limiter,
-        max_retries=0  # CRITICAL: Don't wait 60s, fail immediately so we can rotate
+        max_retries=0  # Fail fast to allow manual rotation
     ).bind_tools(TOOLS)
 
 def create_openai_llm(use_fallback=False):
@@ -188,7 +185,7 @@ else:
 
 
 # -------------------------------------------------
-# ENHANCED SYSTEM PROMPT
+# SYSTEM PROMPT (THE BRAIN)
 # -------------------------------------------------
 SYSTEM_PROMPT = f"""You are an autonomous quiz-solving agent.
 
@@ -234,8 +231,8 @@ STRATEGY FOR SPECIFIC TASK TYPES:
 
 GENERAL PROCESS:
 1. `get_rendered_html(url)`
-2. `extract_context(html)` -> Look for API/Submit URLs
-3. Solve task (use `transcribe_audio` for audio, `analyze_image` for images)
+2. `extract_context(html)` -> Find the `/submit` URL.
+3. Solve task (use `transcribe_audio`, `analyze_image`, or `run_code`).
 4. `post_request(url, payload)`
 
 INFO:
@@ -249,34 +246,42 @@ prompt = ChatPromptTemplate.from_messages([
 ])
 
 # -------------------------------------------------
-# MESSAGE TRIMMING UTILITY (OPENAI SAFE)
+# UTILITIES
 # -------------------------------------------------
 def filter_messages(messages: List, max_keep=20) -> List:
     """OpenAI-Safe Memory Pruning."""
     if len(messages) <= max_keep:
         return messages
     
-    # Keep System Prompt
     system_prompt = messages[0]
-    
-    # Get recent messages
     recent = messages[-max_keep:]
     
-    # SAFETY CHECK: If the first message is a ToolMessage (result),
-    # but we deleted the AIMessage (call) before it, OpenAI will crash.
+    # Remove orphan ToolMessages (prevents OpenAI 400 errors)
     while recent and isinstance(recent[0], ToolMessage):
         recent.pop(0)
     
     return [system_prompt] + recent
 
+def log_llm_decision(result, llm_type="LLM"):
+    """Log what the LLM decided to do (Restored Feature)."""
+    if hasattr(result, "tool_calls") and result.tool_calls:
+        print(f"[AGENT] 🔧 {llm_type} decided to call {len(result.tool_calls)} tool(s):")
+        for i, tool_call in enumerate(result.tool_calls, 1):
+            tool_name = tool_call.get("name", "unknown")
+            print(f"[AGENT]   {i}. {tool_name}")
+    elif hasattr(result, "content"):
+        content = result.content
+        if isinstance(content, str):
+            preview = content[:100] + "..." if len(content) > 100 else content
+            print(f"[AGENT] 💬 {llm_type} response: {preview}")
 
 # -------------------------------------------------
-# AGENT NODE (FIXED EXHAUSTIVE RETRY LOGIC)
+# AGENT NODE (ROBUST FALLBACK LOGIC)
 # -------------------------------------------------
 def agent_node(state: AgentState):
     """
     Agent decision node.
-    Logic: Try Gemini Key 1 -> Fail -> Key 2 -> Fail ... -> All Dead -> OpenAI.
+    Logic: Try Gemini Key 1..4 -> If All Fail, IMMEDIATELY call OpenAI.
     """
     trimmed_messages = filter_messages(state["messages"])
     
@@ -289,39 +294,37 @@ def agent_node(state: AgentState):
                 llm = create_gemini_llm()
                 print(f"[AGENT] 🧠 Thinking (Gemini)...")
                 
-                # If this invoke succeeds, we return immediately
                 result = (prompt | llm).invoke({"messages": trimmed_messages})
+                
+                # Success! Log and Return.
+                log_llm_decision(result, "Gemini")
                 return {"messages": state["messages"] + [result]}
                 
             except Exception as e:
                 error_msg = str(e)
                 print(f"[AGENT] ⚠️ Gemini Error: {error_msg[:100]}")
                 
-                # Check for Quota/Rate Limit
-                if "429" in error_msg or "quota" in error_msg.lower() or "resource_exhausted" in error_msg.lower() or "503" in error_msg:
-                    print(f"[AGENT] 🔄 Gemini Key failed. Marking as dead and trying next...")
+                # Check for Quota (429) or Server Overload (503)
+                if "429" in error_msg or "quota" in error_msg.lower() or "503" in error_msg:
+                    print(f"[AGENT] 🔄 Key failed (429/503). Marking as dead and trying next...")
                     api_rotator.mark_key_exhausted()
-                    # Loop continues... api_rotator.get_next_key() is handled inside create_gemini_llm logic via rotator state
-                    
-                    # Force rotator to switch index for next iteration if not handled automatically
-                    if not api_rotator.are_all_keys_exhausted():
-                        api_rotator.get_next_key() 
+                    # Loop continues to next key automatically via api_rotator
                 else:
-                    # If it's a logic error (not quota), we might want to just fall through to OpenAI 
-                    # to be safe, or break the loop. Let's break to OpenAI.
+                    # Logic error? Break loop and let OpenAI handle it.
                     print(f"[AGENT] 🛑 Non-quota error. Switching to OpenAI.")
                     break
 
     # 2. Fallback to OpenAI
-    # We reach here ONLY if USE_GEMINI is False, OR all keys exhausted, OR unknown error broke the loop.
+    # We reach here ONLY if Gemini is disabled, exhausted, or failed.
     print(f"[AGENT] 🧠 Thinking (OpenAI Fallback)...")
     try:
         llm = create_openai_llm()
         result = (prompt | llm).invoke({"messages": trimmed_messages})
+        log_llm_decision(result, "OpenAI")
         return {"messages": state["messages"] + [result]}
     except Exception as e:
         print(f"[AGENT] ❌ OpenAI Error: {e}")
-        # If OpenAI fails, we really are stuck.
+        # If OpenAI fails, we crash.
         raise e
 
 def route(state):
@@ -350,9 +353,8 @@ graph.add_conditional_edges(
 
 app = graph.compile()
 
-
 # -------------------------------------------------
-# RUN AGENT
+# RUN AGENT ENTRY POINT
 # -------------------------------------------------
 def run_agent(url: str) -> str:
     """Run the agent on a quiz URL."""
@@ -361,15 +363,14 @@ def run_agent(url: str) -> str:
     print(f"[AGENT] URL: {url}")
     print(f"{'='*60}\n")
     
-    # Reset submission tracking
+    # 1. Reset timer for the first question
     from hybrid_tools.send_request import reset_submission_tracking
     reset_submission_tracking()
     
-    # Start logging
+    # 2. Start logging threads
     start_periodic_uploads()
-    
-    # Initialize state
     start_time = time.time()
+    
     initial_state = {
         "messages": [{"role": "user", "content": url}],
         "previous_answers": {},
