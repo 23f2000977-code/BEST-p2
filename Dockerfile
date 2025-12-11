@@ -3,28 +3,28 @@ FROM ghcr.io/astral-sh/uv:python3.11-bookworm-slim
 WORKDIR /app
 
 # Install system dependencies
-# CRITICAL: Added ffmpeg for audio processing
+# CRITICAL: ffmpeg is required for audio processing (pydub/speechrecognition)
 RUN apt-get update && apt-get install -y \
     curl \
     ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy ALL files first
+# Copy ALL files first (needed for uv to read pyproject.toml properly)
 COPY . .
 
-# Pre-install heavy libraries
-RUN uv pip install --system --no-cache pandas numpy scipy playwright beautifulsoup4 requests scikit-learn pillow python-dotenv fastapi uvicorn
+# Pre-install heavy libraries to avoid runtime timeouts
+RUN uv pip install --system --no-cache pandas numpy scipy playwright beautifulsoup4 requests scikit-learn pillow python-dotenv fastapi uvicorn pydub SpeechRecognition ffmpeg-python soundfile
 
-# Install remaining Python dependencies
+# Install remaining Python dependencies from pyproject.toml
 RUN uv pip install --system --no-cache .
 
-# Install Playwright
+# Install Playwright and its dependencies
 RUN playwright install --with-deps chromium
 
-# Create directory for file operations
+# Create directory for file operations AND fix permissions for HF Spaces (user 1000)
 RUN mkdir -p /app/hybrid_llm_files && chmod 777 /app/hybrid_llm_files
 
-# Expose port
+# Expose port (HF Spaces uses 7860)
 EXPOSE 7860
 
 # Run the application

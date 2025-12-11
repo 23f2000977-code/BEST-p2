@@ -1,13 +1,12 @@
 """
 Enhanced code executor with safety checks and smart features.
-Combines someonesproject2's execution with your project's safety and timeout features.
+Includes FFmpeg path injection for Audio processing.
 """
 
 from langchain_core.tools import tool
 import subprocess
 import os
-import tempfile
-from typing import Dict
+import sys
 
 @tool
 def run_code(code: str) -> dict:
@@ -24,7 +23,6 @@ def run_code(code: str) -> dict:
     - Code should assign the final answer to a variable named 'answer'
     - Do NOT include submission code (httpx.post, requests.post)
     - Do NOT hardcode data - always fetch from APIs/files
-    - Use provided context variables if available
     
     Parameters
     ----------
@@ -44,10 +42,12 @@ def run_code(code: str) -> dict:
     print(f"\n[CODE_EXECUTOR] Executing code ({len(code)} chars)")
     
     try:
-        # Safety validation
+        # ---------------------------------------------------------
+        # 1. SAFETY CHECKS
+        # ---------------------------------------------------------
         dangerous_patterns = [
             'os.system', 'subprocess.call', 'eval(', 'exec(',
-            '__import__', 'open(', 'file(',
+            '__import__', 'shutil.rmtree'
         ]
         
         code_lower = code.lower()
@@ -55,6 +55,9 @@ def run_code(code: str) -> dict:
             if pattern.lower() in code_lower:
                 print(f"[CODE_EXECUTOR] ⚠ Warning: Potentially dangerous pattern '{pattern}' detected")
         
+        # ---------------------------------------------------------
+        # 2. FILE PREPARATION
+        # ---------------------------------------------------------
         # Create execution directory
         exec_dir = "hybrid_llm_files"
         os.makedirs(exec_dir, exist_ok=True)
@@ -62,17 +65,28 @@ def run_code(code: str) -> dict:
         # Write code to file
         filename = "runner.py"
         filepath = os.path.join(exec_dir, filename)
+
+        # CRITICAL FIX: Prepend FFmpeg path setup for Audio Libraries (Pydub/SpeechRecognition)
+        # This fixes the "RuntimeWarning: Couldn't find ffmpeg" error
+        header = """
+import os
+import sys
+# Force Pydub/System to find FFmpeg in the Docker container
+os.environ["PATH"] += os.pathsep + "/usr/bin"
+"""
+        # Only add header if imports are likely needed
+        full_code = header + code if "import" in code else code
         
         with open(filepath, "w") as f:
-            f.write(code)
+            f.write(full_code)
         
         print(f"[CODE_EXECUTOR] Code written to {filepath}")
-        print(f"[CODE_EXECUTOR] Starting execution with uv run...")
         
-        # Execute with timeout
+        # ---------------------------------------------------------
+        # 3. EXECUTION
+        # ---------------------------------------------------------
         try:
-            print(f"[CODE_EXECUTOR] Command: uv run {filename}")
-            print(f"[CODE_EXECUTOR] Working directory: {exec_dir}")
+            # print(f"[CODE_EXECUTOR] Command: uv run {filename}")
             
             proc = subprocess.Popen(
                 ["uv", "run", filename],
@@ -82,11 +96,9 @@ def run_code(code: str) -> dict:
                 cwd=exec_dir
             )
             
-            print(f"[CODE_EXECUTOR] Process started, waiting for completion (90s timeout)...")
+            # Wait for completion (90s timeout)
             stdout, stderr = proc.communicate(timeout=90)
             return_code = proc.returncode
-            
-            print(f"[CODE_EXECUTOR] Process completed with return code: {return_code}")
             
         except subprocess.TimeoutExpired:
             print(f"[CODE_EXECUTOR] ⏱️ Timeout expired after 90 seconds")
@@ -99,14 +111,15 @@ def run_code(code: str) -> dict:
                 "answer": None
             }
 
-        
+        # ---------------------------------------------------------
+        # 4. OUTPUT PROCESSING
+        # ---------------------------------------------------------
         # Try to extract answer from output
         answer = None
         if return_code == 0:
-            # Look for "answer = " in stdout
+            # Look for "answer = " in stdout (simple heuristic)
             for line in stdout.split('\n'):
                 if line.strip():
-                    # Last non-empty line is likely the answer
                     answer = line.strip()
         
         # Detect if answer is base64 (long string)
@@ -115,10 +128,10 @@ def run_code(code: str) -> dict:
             is_base64 = True
             print(f"[CODE_EXECUTOR] Detected base64 answer ({len(answer)} chars)")
         
-        # Truncate stdout to avoid overwhelming LLM
+        # Truncate stdout to avoid overwhelming LLM memory
         truncated_stdout = stdout
-        if len(stdout) > 500:
-            truncated_stdout = stdout[:500] + f"\n... (truncated {len(stdout) - 500} chars)"
+        if len(stdout) > 2000:
+            truncated_stdout = stdout[:2000] + f"\n... (truncated {len(stdout) - 2000} chars)"
         
         result = {
             "stdout": truncated_stdout,
@@ -129,33 +142,21 @@ def run_code(code: str) -> dict:
         
         if return_code == 0:
             print(f"[CODE_EXECUTOR] ✓ Execution successful")
-            if answer:
-                if is_base64:
-                    # Show preview for base64 - don't print full string
-                    print(f"[CODE_EXECUTOR] Answer: [BASE64 IMAGE - {len(answer)} chars]")
-                else:
-                    print(f"[CODE_EXECUTOR] Answer extracted: {answer}")
-            if stdout and not is_base64:
-                print(f"[CODE_EXECUTOR] Stdout preview: {stdout[:200]}")
+            if answer and not is_base64:
+                print(f"[CODE_EXECUTOR] Answer extracted: {answer}")
         else:
             print(f"[CODE_EXECUTOR] ✗ Execution failed with code {return_code}")
             if stderr:
-                print(f"[CODE_EXECUTOR] Error: {stderr[:500]}")
-            if stdout:
-                print(f"[CODE_EXECUTOR] Stdout: {stdout[:200]}")
+                print(f"[CODE_EXECUTOR] Error: {stderr[:500]}...")
         
         return result
         
     except Exception as e:
         error_msg = str(e)
         print(f"[CODE_EXECUTOR] ✗ Exception: {error_msg}")
-        import traceback
-        print(f"[CODE_EXECUTOR] Traceback:")
-        traceback.print_exc()
         return {
             "stdout": "",
             "stderr": error_msg,
             "return_code": -1,
             "answer": None
         }
-

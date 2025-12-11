@@ -1,12 +1,14 @@
 """
-Hybrid LangGraph Agent - The "Best of Both Worlds" Final Version
+Hybrid LangGraph Agent - Full Heavy-Duty Version
 
-Features:
-- 🧠 Dual-Brain: Gemini (Primary) + OpenAI (Fallback)
-- 🔄 Smart Rotation: Exhausts all Gemini keys before spending OpenAI credits
-- 🛡️ Safe-Fail: "Rage Quit" logic to skip impossible questions
-- 📝 Full Logging: Remote Gist uploads + Detailed console output
-- 🔧 Fixes: 405 Errors, JSON quoting, Image Math, CSV Dates
+Combines:
+- LangGraph architecture
+- Enhanced features for data science tasks
+- Smart API Key Rotation with EXHAUSTIVE RETRY LOOP
+- Memory Management (OpenAI Safe Version)
+- "Rage Quit" Logic
+- FULL Remote Logging (GitHub Gist)
+- Fixes for: 405 Errors, JSON Quoting, Heatmap Math, CSV Dates, Audio Strategy
 """
 
 from langgraph.graph import StateGraph, END, START
@@ -45,7 +47,7 @@ FALLBACK_OPENAI_MODEL = os.getenv("FALLBACK_OPENAI_MODEL", "gpt-4o-mini")
 PRIMARY_OPENAI_MODEL = os.getenv("PRIMARY_OPENAI_MODEL", "gpt-4o-mini")
 
 # -------------------------------------------------
-# LOGGING INFRASTRUCTURE (CRITICAL)
+# LOGGING INFRASTRUCTURE (FULL RESTORATION)
 # -------------------------------------------------
 upload_thread = None
 stop_upload_thread = False
@@ -114,12 +116,14 @@ signal.signal(signal.SIGTERM, signal_handler)
 # STATE & TOOLS
 # -------------------------------------------------
 class AgentState(TypedDict):
-    """Enhanced state with context tracking."""
+    """Enhanced state with context tracking from your project."""
     messages: Annotated[List, add_messages]
-    previous_answers: Dict[str, Any]
-    context: Dict[str, Any]
-    start_time: float
+    previous_answers: Dict[str, Any]  # Track answers for multi-question chains
+    context: Dict[str, Any]  # Rich context from pages
+    start_time: float  # For time tracking
 
+
+# All available tools
 TOOLS = [
     run_code,
     get_rendered_html,
@@ -134,7 +138,7 @@ TOOLS = [
 ]
 
 # -------------------------------------------------
-# LLM SETUP
+# LLM CONFIGURATION
 # -------------------------------------------------
 # Initialize API key rotator (for Gemini)
 try:
@@ -146,7 +150,7 @@ except Exception as e:
     api_rotator = None
 
 rate_limiter = InMemoryRateLimiter(
-    requests_per_second=9/60,
+    requests_per_second=9/60,  # 9 requests per minute
     check_every_n_seconds=1,
     max_bucket_size=9
 )
@@ -155,8 +159,8 @@ def create_gemini_llm():
     """Create Gemini LLM with current rotated key."""
     if not api_rotator:
         raise ValueError("No Rotator available for Gemini")
-    
-    # Get current VALID key
+        
+    # Get current VALID key (rotator handles skipping exhausted ones internally)
     api_key = api_rotator.get_current_key()
     
     return init_chat_model(
@@ -164,7 +168,7 @@ def create_gemini_llm():
         model="gemini-2.5-flash",
         api_key=api_key,
         rate_limiter=rate_limiter,
-        max_retries=0  # Fail fast to allow manual rotation
+        max_retries=0  # CRITICAL: Don't wait 60s, fail immediately so we can rotate
     ).bind_tools(TOOLS)
 
 def create_openai_llm(use_fallback=False):
@@ -177,15 +181,9 @@ def create_openai_llm(use_fallback=False):
         base_url=os.getenv("OPENAI_BASE_URL")
     ).bind_tools(TOOLS)
 
-if USE_GEMINI:
-    print(f"[AGENT] Primary LLM: Gemini (gemini-2.5-flash)")
-    print(f"[AGENT] Fallback LLM: OpenAI ({FALLBACK_OPENAI_MODEL})")
-else:
-    print(f"[AGENT] Primary LLM: OpenAI ({PRIMARY_OPENAI_MODEL})")
-
 
 # -------------------------------------------------
-# SYSTEM PROMPT (THE BRAIN)
+# ENHANCED SYSTEM PROMPT
 # -------------------------------------------------
 SYSTEM_PROMPT = f"""You are an autonomous quiz-solving agent.
 
@@ -227,12 +225,17 @@ STRATEGY FOR SPECIFIC TASK TYPES:
 6. 🐍 CSV & DATES (ROBUSTNESS):
    - When parsing dates in CSVs using pandas, ALWAYS use `errors='coerce'`.
    - Example: `pd.to_datetime(df['date_col'], errors='coerce')`
-   - This prevents crashes when the data is messy or mixed format.
+
+7. 🔊 AUDIO STRATEGY (CRITICAL):
+   - If using Gemini, try `transcribe_audio`.
+   - If using OpenAI (Fallback), do NOT try to transcribe.
+   - IMMEDIATELY SUBMIT "SKIP" as the answer.
+   - OpenAI cannot process audio files reliably in this environment (FFmpeg issues).
 
 GENERAL PROCESS:
 1. `get_rendered_html(url)`
-2. `extract_context(html)` -> Find the `/submit` URL.
-3. Solve task (use `transcribe_audio`, `analyze_image`, or `run_code`).
+2. `extract_context(html)` -> Look for API/Submit URLs
+3. Solve task (use `transcribe_audio` for audio, `analyze_image` for images)
 4. `post_request(url, payload)`
 
 INFO:
@@ -246,24 +249,19 @@ prompt = ChatPromptTemplate.from_messages([
 ])
 
 # -------------------------------------------------
-# UTILITIES
+# NODES AND LOGIC
 # -------------------------------------------------
 def filter_messages(messages: List, max_keep=20) -> List:
     """OpenAI-Safe Memory Pruning."""
     if len(messages) <= max_keep:
         return messages
-    
-    system_prompt = messages[0]
     recent = messages[-max_keep:]
-    
-    # Remove orphan ToolMessages (prevents OpenAI 400 errors)
     while recent and isinstance(recent[0], ToolMessage):
         recent.pop(0)
-    
-    return [system_prompt] + recent
+    return [messages[0]] + recent
 
 def log_llm_decision(result, llm_type="LLM"):
-    """Log what the LLM decided to do (Restored Feature)."""
+    """Log what the LLM decided to do."""
     if hasattr(result, "tool_calls") and result.tool_calls:
         print(f"[AGENT] 🔧 {llm_type} decided to call {len(result.tool_calls)} tool(s):")
         for i, tool_call in enumerate(result.tool_calls, 1):
@@ -275,9 +273,6 @@ def log_llm_decision(result, llm_type="LLM"):
             preview = content[:100] + "..." if len(content) > 100 else content
             print(f"[AGENT] 💬 {llm_type} response: {preview}")
 
-# -------------------------------------------------
-# AGENT NODE (ROBUST FALLBACK LOGIC)
-# -------------------------------------------------
 def agent_node(state: AgentState):
     """
     Agent decision node.
@@ -287,10 +282,8 @@ def agent_node(state: AgentState):
     
     # 1. Try Gemini Loop
     if USE_GEMINI:
-        # Loop while we still have valid keys to try
         while api_rotator and not api_rotator.are_all_keys_exhausted():
             try:
-                # Use current key
                 llm = create_gemini_llm()
                 print(f"[AGENT] 🧠 Thinking (Gemini)...")
                 
@@ -304,18 +297,14 @@ def agent_node(state: AgentState):
                 error_msg = str(e)
                 print(f"[AGENT] ⚠️ Gemini Error: {error_msg[:100]}")
                 
-                # Check for Quota (429) or Server Overload (503)
                 if "429" in error_msg or "quota" in error_msg.lower() or "503" in error_msg:
                     print(f"[AGENT] 🔄 Key failed (429/503). Marking as dead and trying next...")
                     api_rotator.mark_key_exhausted()
-                    # Loop continues to next key automatically via api_rotator
                 else:
-                    # Logic error? Break loop and let OpenAI handle it.
                     print(f"[AGENT] 🛑 Non-quota error. Switching to OpenAI.")
                     break
 
     # 2. Fallback to OpenAI
-    # We reach here ONLY if Gemini is disabled, exhausted, or failed.
     print(f"[AGENT] 🧠 Thinking (OpenAI Fallback)...")
     try:
         llm = create_openai_llm()
@@ -324,7 +313,6 @@ def agent_node(state: AgentState):
         return {"messages": state["messages"] + [result]}
     except Exception as e:
         print(f"[AGENT] ❌ OpenAI Error: {e}")
-        # If OpenAI fails, we crash.
         raise e
 
 def route(state):
@@ -337,7 +325,7 @@ def route(state):
     return "agent"
 
 # -------------------------------------------------
-# GRAPH SETUP
+# GRAPH SETUP & RUN
 # -------------------------------------------------
 graph = StateGraph(AgentState)
 
@@ -353,9 +341,6 @@ graph.add_conditional_edges(
 
 app = graph.compile()
 
-# -------------------------------------------------
-# RUN AGENT ENTRY POINT
-# -------------------------------------------------
 def run_agent(url: str) -> str:
     """Run the agent on a quiz URL."""
     print(f"\n{'='*60}")
@@ -363,11 +348,9 @@ def run_agent(url: str) -> str:
     print(f"[AGENT] URL: {url}")
     print(f"{'='*60}\n")
     
-    # 1. Reset timer for the first question
     from hybrid_tools.send_request import reset_submission_tracking
     reset_submission_tracking()
     
-    # 2. Start logging threads
     start_periodic_uploads()
     start_time = time.time()
     
@@ -395,7 +378,6 @@ def run_agent(url: str) -> str:
     except Exception as e:
         total_time = time.time() - start_time
         print(f"\n[AGENT] ✗ Error: {e}")
-        
         stop_periodic_uploads()
         upload_current_log("Error")
         return f"error: {e}"
