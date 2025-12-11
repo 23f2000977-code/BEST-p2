@@ -1,14 +1,14 @@
 """
-Hybrid LangGraph Agent - Best of Both Worlds
+Hybrid LangGraph Agent - General Purpose Version
 
 Combines:
 - LangGraph architecture
 - Enhanced features for data science tasks
-- Smart API Key Rotation
+- Smart API Key Rotation with RECURSIVE RETRY (Restored)
 - Memory Management (OpenAI Safe Version)
 - "Rage Quit" Logic
 - FULL Remote Logging (GitHub Gist)
-- Fixes for: 405 Errors, JSON Quoting, and Heatmap Math
+- Fixes for: 405 Errors, JSON Quoting, Heatmap Math, and CSV Dates
 """
 
 from langgraph.graph import StateGraph, END, START
@@ -154,13 +154,16 @@ rate_limiter = InMemoryRateLimiter(
     max_bucket_size=9
 )
 
-def create_gemini_llm():
-    """Create Gemini LLM with rotation and fast-fail."""
+def create_gemini_llm(retry_mode=False):
+    """Create Gemini LLM. If retry_mode=True, gets the NEXT key."""
     if not api_rotator:
         raise ValueError("No Rotator available for Gemini")
-        
-    # Get next VALID key (skipping exhausted ones)
-    api_key = api_rotator.get_next_key()
+    
+    # If retrying, we explicitly want the next key
+    if retry_mode:
+        api_key = api_rotator.get_next_key()
+    else:
+        api_key = api_rotator.get_current_key()
     
     return init_chat_model(
         model_provider="google_genai",
@@ -227,6 +230,11 @@ STRATEGY FOR SPECIFIC TASK TYPES:
    - DO NOT POST to the question URL (e.g., do not post to `.../project2-uv`).
    - If you get a "405 Method Not Allowed" error, you are posting to the wrong URL. Check the context or default to `/submit`.
 
+6. 🐍 CSV & DATES (ROBUSTNESS):
+   - When parsing dates in CSVs using pandas, ALWAYS use `errors='coerce'`.
+   - Example: `pd.to_datetime(df['date_col'], errors='coerce')`
+   - This prevents crashes when the data is messy or mixed format.
+
 GENERAL PROCESS:
 1. `get_rendered_html(url)`
 2. `extract_context(html)` -> Look for API/Submit URLs
@@ -292,7 +300,8 @@ def agent_node(state: AgentState):
         
         # Try Gemini
         try:
-            llm = create_gemini_llm()
+            # Note: We use the CURRENT key first.
+            llm = create_gemini_llm(retry_mode=False)
             llm_with_prompt = prompt | llm
             # Use trimmed messages
             result = llm_with_prompt.invoke({"messages": trimmed_messages})
@@ -319,7 +328,8 @@ def agent_node(state: AgentState):
                     return use_openai(state, use_fallback=True)
                 else:
                     print(f"[AGENT] 🔄 Retrying immediately with next key...")
-                    return agent_node(state) # Recursive retry with new key
+                    # RECURSIVE RETRY: Call agent_node again to try the next key
+                    return agent_node(state)
             
             # Fallback to OpenAI for other errors
             print(f"[AGENT] 🔄 Switching to OpenAI fallback")
