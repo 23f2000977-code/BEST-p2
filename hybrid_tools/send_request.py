@@ -1,21 +1,20 @@
 """
-Enhanced POST request tool with Force-Skip and Correct Timer Logic.
+Enhanced POST request tool with Force-Skip, Credential Injection, and Timer Logic.
 """
 
 from langchain_core.tools import tool
 import requests
 import time
+import os
 from typing import Any, Dict, Optional
 
 # --------------------------------------------------------------------------
 # STATE MANAGEMENT
 # We use a simple class to ensure the timer state persists correctly
-# across different tool calls without 'global' keyword confusion.
 # --------------------------------------------------------------------------
 class RequestState:
     def __init__(self):
         self.start_time = time.time()
-        self.current_url = None
 
     def reset_timer(self):
         self.start_time = time.time()
@@ -36,18 +35,31 @@ def post_request(url: str, payload: Dict[str, Any], headers: Optional[Dict[str, 
     """
     Send an HTTP POST request to submit an answer.
     
-    CRITICAL FEATURES:
-    1. Tracks time per question (resets on success/new URL).
-    2. FORCE SKIPS if time > 160s to ensure we get the next URL.
+    FEATURES:
+    1. Auto-injects Email/Secret if missing (Prevents 400 Bad Request).
+    2. Tracks time per question.
+    3. FORCE SKIPS if time > 160s.
     """
+    # -------------------------------------------------------
+    # 1. CREDENTIAL INJECTION (Safety Net)
+    # -------------------------------------------------------
+    # If the LLM tries to skip but forgets credentials, we add them.
+    if "email" not in payload:
+        email = os.getenv("TDS_EMAIL") or os.getenv("EMAIL")
+        if email:
+            payload["email"] = email
+            
+    if "secret" not in payload:
+        secret = os.getenv("TDS_SECRET") or os.getenv("SECRET")
+        if secret:
+            payload["secret"] = secret
+
+    # -------------------------------------------------------
+    # 2. TIME LIMIT SAFETY CHECK
+    # -------------------------------------------------------
     elapsed = _state.get_elapsed()
-    headers = headers or {"Content-Type": "application/json"}
     
-    # -------------------------------------------------------
-    # 1. TIME LIMIT SAFETY CHECK
-    # -------------------------------------------------------
     # If we are nearing the 180s limit (3 mins), we FORCE a skip.
-    # We use 160s to give a 20s buffer for network latency.
     if elapsed > 160:
         print(f"\n[SUBMIT] 🚨 CRITICAL: Time limit imminent ({elapsed:.1f}s / 180s).")
         print(f"[SUBMIT] ⏭️ FORCING 'SKIP' to get next question link.")
@@ -55,6 +67,8 @@ def post_request(url: str, payload: Dict[str, Any], headers: Optional[Dict[str, 
     else:
         print(f"\n[SUBMIT] Submitting answer to: {url}")
         print(f"[SUBMIT] Per-Question Timer: {elapsed:.1f}s / 180s")
+    
+    headers = headers or {"Content-Type": "application/json"}
     
     try:
         # Send Request
@@ -70,7 +84,7 @@ def post_request(url: str, payload: Dict[str, Any], headers: Optional[Dict[str, 
         reason = data.get("reason", "")
         
         # -------------------------------------------------------
-        # 2. RESULT HANDLING & TIMER RESET
+        # 3. RESULT HANDLING & TIMER RESET
         # -------------------------------------------------------
         result = {
             "correct": correct,

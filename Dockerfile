@@ -3,16 +3,16 @@ FROM ghcr.io/astral-sh/uv:python3.11-bookworm-slim
 WORKDIR /app
 
 # Install system dependencies
+# ADDED: ffmpeg (Critical for Audio Processing)
 RUN apt-get update && apt-get install -y \
     curl \
+    ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy ALL files first (needed for uv to read pyproject.toml properly)
 COPY . .
 
-# ----------------------------------------------------------------
-# IMPROVEMENT: Pre-install heavy libraries to avoid runtime timeouts
-# ----------------------------------------------------------------
+# Pre-install heavy libraries to avoid runtime timeouts
 RUN uv pip install --system --no-cache pandas numpy scipy playwright beautifulsoup4 requests scikit-learn pillow python-dotenv fastapi uvicorn
 
 # Install remaining Python dependencies from pyproject.toml
