@@ -8,6 +8,7 @@ Combines:
 - Memory Management (OpenAI Safe Version)
 - "Rage Quit" Logic
 - FULL Remote Logging (GitHub Gist)
+- Fixes for: 405 Errors, JSON Quoting, and Heatmap Math
 """
 
 from langgraph.graph import StateGraph, END, START
@@ -103,7 +104,7 @@ signal.signal(signal.SIGINT, signal_handler)
 signal.signal(signal.SIGTERM, signal_handler)
 
 # -------------------------------------------------
-# ENHANCED STATE
+# STATE & TOOLS
 # -------------------------------------------------
 class AgentState(TypedDict):
     """Enhanced state with context tracking from your project."""
@@ -155,11 +156,11 @@ rate_limiter = InMemoryRateLimiter(
 
 def create_gemini_llm():
     """Create Gemini LLM with rotation and fast-fail."""
-    if api_rotator:
-        # Get next VALID key (skipping exhausted ones)
-        api_key = api_rotator.get_next_key()
-    else:
-        api_key = os.getenv("GOOGLE_API_KEY")
+    if not api_rotator:
+        raise ValueError("No Rotator available for Gemini")
+        
+    # Get next VALID key (skipping exhausted ones)
+    api_key = api_rotator.get_next_key()
     
     return init_chat_model(
         model_provider="google_genai",
@@ -219,6 +220,12 @@ STRATEGY FOR SPECIFIC TASK TYPES:
    - If you fail a task 3 times, or if the `post_request` tool tells you "Time limit imminent",
    - SUBMIT "SKIP" as the answer.
    - This ensures we receive the next URL instead of timing out.
+
+5. 📮 SUBMISSION URL RULE (CRITICAL):
+   - You must find the correct submission URL in the HTML.
+   - It is usually `https://tds-llm-analysis.s-anand.net/submit` or ends in `/submit`.
+   - DO NOT POST to the question URL (e.g., do not post to `.../project2-uv`).
+   - If you get a "405 Method Not Allowed" error, you are posting to the wrong URL. Check the context or default to `/submit`.
 
 GENERAL PROCESS:
 1. `get_rendered_html(url)`
@@ -294,14 +301,14 @@ def agent_node(state: AgentState):
             
         except Exception as e:
             error_msg = str(e)
-            print(f"[AGENT] ❌ Gemini failed: {error_msg[:100]}")
+            print(f"[AGENT] ❌ Gemini failed: {error_msg[:200]}")
             
             # Check if it's a quota error
             is_quota_error = any(keyword in error_msg.lower() 
                                for keyword in ["quota", "429", "resource_exhausted", "rate limit"])
             
             if is_quota_error and api_rotator:
-                print(f"[AGENT] 🔄 Quota exceeded. Marking key as dead...")
+                print(f"[AGENT] 🔄 Quota exceeded. Marking key as dead and retrying...")
                 
                 # Mark current key as dead
                 current_key = api_rotator.get_current_key()
