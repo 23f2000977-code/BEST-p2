@@ -4,7 +4,7 @@ Hybrid LangGraph Agent - The "Best of Both Worlds" Final Version
 Features:
 - 🧠 Dual-Brain: Gemini (Primary) + OpenAI (Fallback)
 - 🔄 Smart Rotation: Exhausts all Gemini keys before spending OpenAI credits
-- 🛡 Safe-Fail: "Rage Quit" logic to skip impossible questions
+- 🛡️ Safe-Fail: "Rage Quit" logic to skip impossible questions
 - 📝 Full Logging: Remote Gist uploads + Detailed console output
 - 🔧 Fixes: 405 Errors, JSON quoting, Image Math, CSV Dates, File Paths
 """
@@ -99,7 +99,7 @@ def stop_periodic_uploads():
 
 def signal_handler(signum, frame):
     """Handle Ctrl+C gracefully by uploading logs."""
-    print("\n[AGENT] ⚠ Interrupted by user, uploading logs...")
+    print("\n[AGENT] ⚠️ Interrupted by user, uploading logs...")
     stop_periodic_uploads()
     upload_current_log("Interrupted")
     print("[AGENT] ✓ Logs uploaded, exiting...")
@@ -161,7 +161,7 @@ def create_gemini_llm():
     
     return init_chat_model(
         model_provider="google_genai",
-        model="gemini-1.5-flash",
+        model="gemini-2.5-flash",
         api_key=api_key,
         rate_limiter=rate_limiter,
         max_retries=0  # Fail fast to allow manual rotation
@@ -189,53 +189,53 @@ else:
 # -------------------------------------------------
 SYSTEM_PROMPT = f"""You are an autonomous quiz-solving agent.
 
-Your goal is to solve data science tasks and submit answers to the post_request tool.
+Your goal is to solve data science tasks and submit answers to the `post_request` tool.
+
+⚠️ CRITICAL SUBMISSION RULE:
+- The URL for `post_request` is **ALWAYS** `https://tds-llm-analysis.s-anand.net/submit`
+- **NEVER** submit to the Question URL (e.g., do not submit to .../project2-rate).
+- If you get a "405 Method Not Allowed", you posted to the wrong URL.
 
 STRATEGY FOR SPECIFIC TASK TYPES:
 
 1. 🎨 HEATMAPS / COLORS:
    - If asked for "most frequent color" or "heatmap color":
-   - CALL analyze_image immediately. The tool has built-in math to calculate the Hex code.
+   - CALL `analyze_image` immediately. The tool has built-in math to calculate the Hex code.
    - Submit the exact Hex code returned by the tool.
    - DO NOT write your own Python code for this.
 
 2. 💻 UV / GIT COMMANDS (JSON FORMATTING RULES):
-   - You will often be asked to submit a command string like: uv http get ...
+   - You will often be asked to submit a command string like: `uv http get ...`
    - CRITICAL: You must ensure valid JSON syntax.
    - NEVER use double quotes (") inside the command string.
    - ALWAYS use SINGLE QUOTES (') for inner arguments.
    - WRONG: "answer": "uv http get "https://url" -H "Accept: json"" (This breaks JSON)
    - CORRECT: "answer": "uv http get 'https://url' -H 'Accept: json'"
-   - If the server rejects your answer due to format, try removing the quotes around the URL entirely.
 
 3. 📁 FILE PATHS (CRITICAL FIX):
-   - All files are downloaded to hybrid_llm_files/
-   - *IMPORTANT*: When using run_code, the script executes INSIDE that folder.
-   - *DO NOT* prepend hybrid_llm_files/ to file paths in your Python code.
-   - *CORRECT*: Image.open('heatmap.png'), pd.read_csv('data.csv')
-   - *WRONG*: Image.open('hybrid_llm_files/heatmap.png') (This causes FileNotFoundError)
+   - All files are downloaded to `hybrid_llm_files/`
+   - **IMPORTANT**: When using `run_code`, the script executes INSIDE that folder.
+   - **DO NOT** prepend `hybrid_llm_files/` to file paths in your Python code.
+   - **CORRECT**: `Image.open('heatmap.png')`, `pd.read_csv('data.csv')`
+   - **WRONG**: `Image.open('hybrid_llm_files/heatmap.png')` (This causes FileNotFoundError)
 
 4. 🛑 SKIPPING LOGIC:
-   - If you fail a task 3 times, or if the post_request tool tells you "Time limit imminent",
+   - If you fail a task 3 times, or if the `post_request` tool tells you "Time limit imminent",
    - SUBMIT "SKIP" as the answer.
    - This ensures we receive the next URL instead of timing out.
 
-5. 📮 SUBMISSION URL RULE (CRITICAL):
-   - You must find the correct submission URL in the HTML.
-   - It is usually https://tds-llm-analysis.s-anand.net/submit or ends in /submit.
-   - DO NOT POST to the question URL (e.g., do not post to .../project2-uv).
-   - If you get a "405 Method Not Allowed" error, you are posting to the wrong URL. Check the context or default to /submit.
+5. 🧼 CSV CLEANING & DATES:
+   - When cleaning CSVs, standard date format is **YYYY-MM-DD** (string).
+   - Use `errors='coerce'` in pandas.
+   - Example: `df['date'] = pd.to_datetime(df['date'], errors='coerce').dt.strftime('%Y-%m-%d')`
 
-6. 🐍 CSV & DATES (ROBUSTNESS):
-   - When parsing dates in CSVs using pandas, ALWAYS use errors='coerce'.
-   - Example: pd.to_datetime(df['date_col'], errors='coerce')
-   - This prevents crashes when the data is messy or mixed format.
-
-GENERAL PROCESS:
-1. get_rendered_html(url)
-2. extract_context(html) -> Find the /submit URL.
-3. Solve task (use transcribe_audio, analyze_image, or run_code).
-4. post_request(url, payload)
+6. 🔢 RATE LIMITS (MATH TASK):
+   - You will download `rate.json`.
+   - Calculate `Time_Min = pages / per_minute`.
+   - Calculate `Time_Hour = (pages / per_hour) * 60`.
+   - Take the **MAXIMUM** of (Time_Min, Time_Hour).
+   - Add `(len(email) % 3)` to the result.
+   - **SUBMIT AS FLOAT** (e.g., 67.5). Do not round unless explicitly told.
 
 INFO:
 - Email: {EMAIL}
@@ -304,7 +304,7 @@ def agent_node(state: AgentState):
                 
             except Exception as e:
                 error_msg = str(e)
-                print(f"[AGENT] ⚠ Gemini Error: {error_msg[:100]}")
+                print(f"[AGENT] ⚠️ Gemini Error: {error_msg[:100]}")
                 
                 # Check for Quota (429) or Server Overload (503)
                 if "429" in error_msg or "quota" in error_msg.lower() or "503" in error_msg:
@@ -400,4 +400,4 @@ def run_agent(url: str) -> str:
         
         stop_periodic_uploads()
         upload_current_log("Error")
-        return f"error: {e}"
+        return f"error: {e}"
