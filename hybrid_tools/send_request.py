@@ -38,7 +38,7 @@ def post_request(url: str, payload: Dict[str, Any], headers: Optional[Dict[str, 
     FEATURES:
     1. Auto-injects Email/Secret (Env Var Fallback).
     2. Tracks time per question.
-    3. FORCE SKIPS if time > 160s.
+    3. FORCE SKIPS if time > 140s.
     """
     # ------------------------------------------------------------------
     # 1. CREDENTIAL INJECTION
@@ -60,7 +60,7 @@ def post_request(url: str, payload: Dict[str, Any], headers: Optional[Dict[str, 
     elapsed = _state.get_elapsed()
     
     # If we are nearing the 180s limit (3 mins), we FORCE a skip.
-    if elapsed > 160 and payload.get("answer") != "SKIP":
+    if elapsed > 140 and payload.get("answer") != "SKIP":
         print(f"\n[SUBMIT] 🚨 CRITICAL: Time limit imminent ({elapsed:.1f}s / 180s).")
         print(f"[SUBMIT] ⏭️ FORCING 'SKIP' to get next question link.")
         payload["answer"] = "SKIP"
