@@ -36,24 +36,23 @@ def post_request(url: str, payload: Dict[str, Any], headers: Optional[Dict[str, 
     Send an HTTP POST request to submit an answer.
     
     FEATURES:
-    1. Auto-injects Email/Secret (Hardcoded Fallback) to prevent 400 Bad Request.
+    1. Auto-injects Email/Secret (Env Var Fallback).
     2. Tracks time per question.
     3. FORCE SKIPS if time > 160s.
     """
     # ------------------------------------------------------------------
-    # 1. HARDCODED CREDENTIALS (The "Nuclear Option" for Reliability)
+    # 1. CREDENTIAL INJECTION
     # ------------------------------------------------------------------
-    # These ensure that even if os.getenv fails, we have the values.
-    # Updated based on your logs.
-    FALLBACK_EMAIL = "23f2000977@ds.study.iitm.ac.in"
-    FALLBACK_SECRET = "Saumya29june"
+    # Use environment variables for fallback.
+    FALLBACK_EMAIL = os.getenv("TDS_EMAIL")
+    FALLBACK_SECRET = os.getenv("TDS_SECRET")
 
     # Inject if missing
-    if "email" not in payload:
-        payload["email"] = os.getenv("TDS_EMAIL") or FALLBACK_EMAIL
+    if "email" not in payload and FALLBACK_EMAIL:
+        payload["email"] = FALLBACK_EMAIL
             
-    if "secret" not in payload:
-        payload["secret"] = os.getenv("TDS_SECRET") or FALLBACK_SECRET
+    if "secret" not in payload and FALLBACK_SECRET:
+        payload["secret"] = FALLBACK_SECRET
 
     # ------------------------------------------------------------------
     # 2. TIME LIMIT SAFETY CHECK

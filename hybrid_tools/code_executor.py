@@ -19,6 +19,13 @@ def run_code(code: str) -> dict:
       3. Executes the file with timeout protection
       4. Returns stdout, stderr, and return code
     
+    IMPORTANT FILE PATH RULES:
+    - The code runs INSIDE the 'hybrid_llm_files' directory.
+    - DO NOT prepend 'hybrid_llm_files/' to your file paths.
+    - Access downloaded files directly by name.
+      CORRECT: pd.read_csv('data.csv')
+      WRONG:   pd.read_csv('hybrid_llm_files/data.csv')
+      
     IMPORTANT RULES:
     - Code should assign the final answer to a variable named 'answer'
     - Do NOT include submission code (httpx.post, requests.post)
