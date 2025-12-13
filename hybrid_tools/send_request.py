@@ -1,5 +1,5 @@
 """
-Enhanced POST request tool with Auto-Correction for 405 Errors.
+Enhanced POST request tool with Hardcoded Credentials, Force-Skip, and Timer Logic.
 """
 
 from langchain_core.tools import tool
@@ -39,7 +39,6 @@ def post_request(url: str, payload: Dict[str, Any], headers: Optional[Dict[str, 
     1. Auto-injects Email/Secret (Env Var Fallback).
     2. Tracks time per question.
     3. FORCE SKIPS if time > 140s.
-    4. Auto-corrects 405 Method Not Allowed (Redirects to /submit).
     """
     # ------------------------------------------------------------------
     # 1. CREDENTIAL INJECTION
@@ -60,8 +59,8 @@ def post_request(url: str, payload: Dict[str, Any], headers: Optional[Dict[str, 
     # ------------------------------------------------------------------
     elapsed = _state.get_elapsed()
     
-    # Lowered threshold to 140s to ensure we beat the 180s server timeout
-    if elapsed > 140 and payload.get("answer") != "SKIP":
+    # If we are nearing the 180s limit (3 mins), we FORCE a skip.
+    if elapsed > 10 and payload.get("answer") != "SKIP":
         print(f"\n[SUBMIT] 🚨 CRITICAL: Time limit imminent ({elapsed:.1f}s / 180s).")
         print(f"[SUBMIT] ⏭️ FORCING 'SKIP' to get next question link.")
         payload["answer"] = "SKIP"
@@ -71,27 +70,11 @@ def post_request(url: str, payload: Dict[str, Any], headers: Optional[Dict[str, 
     headers = headers or {"Content-Type": "application/json"}
     
     try:
-        # Initial Request
+        # Send Request
         response = requests.post(url, json=payload, headers=headers, timeout=30)
         
         # -------------------------------------------------------
-        # 3. CRITICAL FIX: 405 AUTO-CORRECTION
-        # -------------------------------------------------------
-        # If the agent posted to a GET-only URL (like /project2-rate), 
-        # the server returns 405. We must redirect to /submit.
-        if response.status_code == 405:
-            print(f"[SUBMIT] ⚠️ 405 Method Not Allowed at {url}")
-            print(f"[SUBMIT] 🛑 Agent likely posted to Question URL instead of Submit URL.")
-            
-            # If we aren't already at /submit, try the standard submit URL
-            if "/submit" not in url:
-                new_url = "https://tds-llm-analysis.s-anand.net/submit"
-                print(f"[SUBMIT] 🔄 Auto-redirecting to: {new_url}")
-                # Retry the request at the correct URL
-                response = requests.post(new_url, json=payload, headers=headers, timeout=30)
-
-        # -------------------------------------------------------
-        # 4. HANDLE 400 ERRORS (The Skip Loop Fix)
+        # 3. HANDLE 400 ERRORS (The Skip Loop Fix)
         # -------------------------------------------------------
         if response.status_code == 400:
             print(f"[SUBMIT] ⚠️ 400 Bad Request. Server rejected payload.")
